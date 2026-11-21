@@ -578,6 +578,78 @@ static int render_shadow_occluded_nocache(
     return 0;
 }
 
+/* First visible surface in the retained clip intervals. Distance is measured
+ * along the original camera ray, including when a cut exposes cell interior. */
+static int render_surface_hit(alea_system_t* sys, regional_worker_t* worker,
+        const render_config_t* cfg, double ox, double oy, double oz,
+        double dx, double dy, double dz, alea_raycast_result_t* result,
+        alea_ray_first_visible_result_t* visible, int* cut_plane) {
+    render_clip_interval_t retained[RENDER_MAX_CLIPS];
+    int retained_count = clip_intervals(ox, oy, oz, dx, dy, dz, cfg, 1e15, retained);
+    *visible = (alea_ray_first_visible_result_t){.cell_id = -1, .surface_id = -1};
+    *cut_plane = -1;
+    for (int region = 0; region < retained_count && !visible->found; region++) {
+        const double t_min = retained[region].t_enter;
+        const double t_max = retained[region].t_exit;
+        int entry_plane = retained[region].entry_plane;
+        const double bias = (entry_plane >= 0 && t_min > 1e-8)
+            ? fmin(1e-7, (t_max - t_min) * 0.25) : 0.0;
+        const double ray_start = t_min + bias;
+        if (ray_start >= t_max) continue;
+        const double trace_ox = ox + ray_start * dx;
+        const double trace_oy = oy + ray_start * dy;
+        const double trace_oz = oz + ray_start * dz;
+        const double trace_t_max = t_max - ray_start;
+        alea_raycast_result_clear(result);
+        alea_ray_t ray;
+        alea_ray_init_normalized(
+            &ray, trace_ox, trace_oy, trace_oz, dx, dy, dz);
+        if (render_first_visible(
+                sys, worker, &ray, trace_t_max, 1, cfg,
+                result, visible) != 0)
+            return -1;
+        if (visible->found) {
+            if (entry_plane >= 0 && bias > 0.0 && visible->t < 1e-6) {
+                visible->t = t_min;
+                *cut_plane = entry_plane;
+            } else visible->t += ray_start;
+        }
+    }
+    return visible->found ? 1 : 0;
+}
+
+int alea_render_pick(alea_system_t* sys, alea_prepared_queries_t* prepared,
+                     const render_config_t* cfg, const render_camera_t* cam,
+                     int x, int y, render_pick_t* hit) {
+    if (!sys || !cfg || !cam || !hit || x < 0 || y < 0 ||
+        x >= cfg->width || y >= cfg->height) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Invalid render pick");
+        return -1;
+    }
+    regional_worker_t* worker = NULL;
+    if (prepared) {
+        if (!alea_regional_render_ready(prepared, sys) ||
+            alea_regional_prepare_render_bounds(prepared) ||
+            alea_regional_reserve_workers(prepared, 1)) return -1;
+        worker = alea_regional_worker(prepared, 0);
+    } else if (alea_prepare_query_acceleration(sys)) return -1;
+    double ox, oy, oz, dx, dy, dz;
+    render_camera_ray(cam, cfg->width, cfg->height, x + 0.5, y + 0.5,
+                      &ox, &oy, &oz, &dx, &dy, &dz);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_first_visible_result_t visible;
+    int cut;
+    int rc = render_surface_hit(sys, worker, cfg, ox, oy, oz, dx, dy, dz, &scratch, &visible, &cut);
+    alea_raycast_result_free(&scratch);
+    if (rc == 1) {
+        *hit = (render_pick_t){.cell_id = visible.cell_id, .material_id = visible.material_id,
+            .surface_id = cut >= 0 ? -1 : visible.surface_id, .clip_plane = cut,
+            .point = {ox + dx * visible.t, oy + dy * visible.t, oz + dz * visible.t}};
+    }
+    return rc;
+}
+
 /**
  * Render a single pixel in solid/cutaway mode.
  * Uses a thread-local alea_raycast_result_t for buffer reuse.
@@ -606,11 +678,6 @@ static void render_pixel_solid(alea_system_t* sys, regional_worker_t* worker,
     *out_depth = 1e30f;
     if (out_normal) { out_normal[0] = 0; out_normal[1] = 0; out_normal[2] = 0; }
 
-    render_clip_interval_t retained[RENDER_MAX_CLIPS];
-    const int retained_count = clip_intervals(
-        ox, oy, oz, dx, dy, dz, cfg, 1e15, retained);
-    if (retained_count == 0) return;
-
     /* Light and view direction */
     double light_dir[3];
     if (cfg->light_set) {
@@ -626,41 +693,11 @@ static void render_pixel_solid(alea_system_t* sys, regional_worker_t* worker,
     double view_dir[3] = {dx, dy, dz};
 
     alea_ray_first_visible_result_t visible;
-    memset(&visible, 0, sizeof(visible));
-    visible.cell_id = -1;
-    visible.surface_id = -1;
-    double t_hit = 0.0;
-    int entry_plane = -1;
-    int is_cross_section = 0;
-    for (int region = 0; region < retained_count && !visible.found; region++) {
-        const double t_min = retained[region].t_enter;
-        const double t_max = retained[region].t_exit;
-        entry_plane = retained[region].entry_plane;
-        const double bias = (entry_plane >= 0 && t_min > 1e-8)
-            ? fmin(1e-7, (t_max - t_min) * 0.25) : 0.0;
-        const double ray_start = t_min + bias;
-        if (ray_start >= t_max) continue;
-        const double trace_ox = ox + ray_start * dx;
-        const double trace_oy = oy + ray_start * dy;
-        const double trace_oz = oz + ray_start * dz;
-        const double trace_t_max = t_max - ray_start;
-        alea_raycast_result_clear(result);
-        alea_ray_t ray;
-        alea_ray_init_normalized(
-            &ray, trace_ox, trace_oy, trace_oz, dx, dy, dz);
-        if (render_first_visible(
-                sys, worker, &ray, trace_t_max, 1, cfg,
-                result, &visible) != 0)
-            return;
-        if (visible.found) {
-            t_hit = ray_start + visible.t;
-            if (entry_plane >= 0 && bias > 0.0 && visible.t < 1e-6) {
-                t_hit = t_min;
-                is_cross_section = 1;
-            }
-        }
-    }
-    if (!visible.found) return;
+    int entry_plane;
+    if (render_surface_hit(sys, worker, cfg, ox, oy, oz, dx, dy, dz, result,
+                           &visible, &entry_plane) != 1) return;
+    double t_hit = visible.t;
+    int is_cross_section = entry_plane >= 0;
 
     float br, bg, bb;
     if (cfg->color_mode == RENDER_COLOR_DENSITY) {
@@ -917,6 +954,7 @@ typedef struct {
     size_t first_tile;
     int compact;
     alea_prepared_queries_t* prepared;
+    const render_updates_t* updates;
 } render_scene_parallel_context_t;
 
 static int render_scene_tile_range(void* opaque, size_t worker,
@@ -930,6 +968,11 @@ static int render_scene_tile_range(void* opaque, size_t worker,
     const int aa = context->aa;
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
+    const render_updates_t* updates = context->updates;
+    if (updates) {
+        result.cancelled = updates->cancelled;
+        result.cancel_user = updates->user;
+    }
     alea_raycast_result_reserve(&result, 64, 32);
     for (size_t tile_index = begin; tile_index < end; tile_index++) {
         const size_t global_tile = context->first_tile + tile_index;
@@ -943,6 +986,7 @@ static int render_scene_tile_range(void* opaque, size_t worker,
             ? y0 + context->tile : height;
         for (int y = y0; y < y1; y++) {
             for (int x = x0; x < x1; x++) {
+                if (updates && alea_ray_interrupted(&result)) goto interrupted;
                 const size_t pixel = context->compact
                     ? tile_index * (size_t)context->tile * context->tile +
                       (size_t)(y - y0) * context->tile + (size_t)(x - x0)
@@ -1021,21 +1065,23 @@ static int render_scene_tile_range(void* opaque, size_t worker,
                 }
             }
         }
-        if (context->prepared && alea_interrupted()) {
-            alea_raycast_result_free(&result);
-            return -1;
-        }
+        if ((updates || context->prepared) && alea_ray_interrupted(&result)) goto interrupted;
+        if (updates && updates->tile_done)
+            updates->tile_done(updates->user, fb, x0, y0, x1 - x0, y1 - y0);
         if (context->progress_done)
             atomic_fetch_add(context->progress_done, 1);
     }
     alea_raycast_result_free(&result);
     return 0;
+interrupted:
+    alea_raycast_result_free(&result);
+    return -1;
 }
 
 static int render_scene_impl(alea_system_t* sys, alea_prepared_queries_t* prepared,
                  const render_config_t* cfg,
                  const render_camera_t* cam,
-                 render_framebuffer_t* fb) {
+                 render_framebuffer_t* fb, const render_updates_t* updates) {
     if (!sys || !cfg || !cam || !fb) return -1;
 
     int w = fb->width;
@@ -1070,11 +1116,12 @@ static int render_scene_impl(alea_system_t* sys, alea_prepared_queries_t* prepar
     atomic_int progress_done;
     atomic_init(&progress_done, 0);
     render_scene_parallel_context_t parallel_context = {
-        sys, cfg, cam, fb, w, h, tile, tiles_x, aa, &progress_done, 0, 0, prepared
+        sys, cfg, cam, fb, w, h, tile, tiles_x, aa, &progress_done, 0, 0, prepared, updates
     };
     alea_parallel_status_t parallel_status = alea_parallel_for(
         (size_t)n_tiles, 1, worker_count, ALEA_PARALLEL_DYNAMIC,
         render_scene_tile_range, &parallel_context, NULL);
+    if (updates && updates->cancelled && updates->cancelled(updates->user)) return 1;
     if (parallel_status != ALEA_PARALLEL_OK) {
         if (prepared && alea_interrupted())
             alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Regional rendering interrupted");
@@ -1089,18 +1136,31 @@ static int render_scene_impl(alea_system_t* sys, alea_prepared_queries_t* prepar
 
 int render_scene(alea_system_t* sys, const render_config_t* cfg,
                  const render_camera_t* cam, render_framebuffer_t* fb) {
-    return render_scene_impl(sys, NULL, cfg, cam, fb);
+    return render_scene_impl(sys, NULL, cfg, cam, fb, NULL);
 }
 
 int alea_render_scene_prepared(alea_system_t* sys, alea_prepared_queries_t* prepared,
                                const render_config_t* cfg, const render_camera_t* cam,
                                render_framebuffer_t* fb) {
-    if (!alea_regional_render_ready(prepared, sys)) return -1;
-    if (cfg && cfg->render_mode == RENDER_MODE_XRAY) {
-        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Regional rendering requires a surface render mode");
+    if (!prepared) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Regional rendering requires a prepared handle for this model");
         return -1;
     }
-    return render_scene_impl(sys, prepared, cfg, cam, fb);
+    return alea_render_scene_progressive(sys, prepared, cfg, cam, fb, NULL);
+}
+
+int alea_render_scene_progressive(alea_system_t* sys, alea_prepared_queries_t* prepared,
+                                  const render_config_t* cfg, const render_camera_t* cam,
+                                  render_framebuffer_t* fb, const render_updates_t* updates) {
+    if (!sys || !cam || !cfg || !fb) return -1;
+    if (prepared && !alea_regional_render_ready(prepared, sys)) return -1;
+    if (cfg->render_mode == RENDER_MODE_XRAY) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "This renderer requires a surface render mode");
+        return -1;
+    }
+    if (updates && updates->cancelled && updates->cancelled(updates->user)) return 1;
+    if (prepared && alea_regional_prepare_render_bounds(prepared)) return -1;
+    return render_scene_impl(sys, prepared, cfg, cam, fb, updates);
 }
 
 int alea_render_scene_tile_span(alea_system_t* sys,
@@ -1121,7 +1181,7 @@ int alea_render_scene_tile_span(alea_system_t* sys,
     render_scene_parallel_context_t context = {
         sys, cfg, cam, compact, cfg->width, cfg->height, tile,
         (int)tiles_x, cfg->aa_samples > 0 ? cfg->aa_samples : 1,
-        NULL, first_tile, 1, NULL
+        NULL, first_tile, 1, NULL, NULL
     };
     return alea_parallel_for(tile_count, 1,
         cfg->threads > 0 ? (size_t)cfg->threads : 0,

@@ -6,6 +6,7 @@
 #include "core/alea_system.h"
 #include "raycast/raycast.h"
 #include "util/alea_alloc.h"
+#include "util/alea_parallel.h"
 
 static void compare_scan(alea_system_t* sys, const alea_ray_t* ray,
                          double limit, int nearest) {
@@ -268,6 +269,55 @@ TEST(repeated_sibling_fill_keeps_nearest_hit_and_reduces_surface_tests) {
     }
     ASSERT(tests[1] < tests[0]);
     alea_destroy(sys);
+}
+
+static int cold_recovery_reader(void* context, size_t worker, size_t begin, size_t end) {
+    (void)worker;
+    alea_system_t* sys = context;
+    for (size_t i = begin; i < end; i++) {
+        if (i % 3 == 0) {
+            if (alea_system_try_prepare_ray_recovery(sys)) return -1;
+        } else if (i % 3 == 1) {
+            alea_system_t* clone = alea_clone(sys);
+            if (!clone) return -1;
+            int rc = alea_prepare_point_lookup(clone);
+            int material = rc ? -1 : alea_material_at(clone, 0, 0, 0);
+            alea_destroy(clone);
+            if (material != 1) return -1;
+        } else {
+            alea_ray_t ray;
+            alea_raycast_result_t result;
+            alea_raycast_result_init(&result);
+            alea_ray_init(&ray, -60, 0, 0, 1, 0, 0);
+            int rc = alea_raycast_hier_segments_nocache(sys, &ray, 120, false, &result);
+            bool ok = !rc && result.segments.count == 3 &&
+                result.segments.data[1].cell_id == 1 && result.segments.data[1].t_enter == 10 &&
+                result.segments.data[1].t_exit == 110;
+            alea_raycast_result_free(&result);
+            if (!ok) return -1;
+        }
+    }
+    return 0;
+}
+
+TEST(batch_recovery_publication_is_optional_and_shared) {
+    mcnp_model_t* model = mcnp_load("tests/data/simple_sphere.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_point_lookup(sys), 0);
+    ASSERT(!atomic_flag_test_and_set(&sys->query_cache_build_lock));
+    int rc = alea_system_try_prepare_ray_recovery(sys);
+    atomic_flag_clear(&sys->query_cache_build_lock);
+    ASSERT_EQ(rc, 0);
+    ASSERT(!alea_system_query_cache_ready(sys, ALEA_CACHE_RAY_RECOVERY));
+    ASSERT_EQ(alea_parallel_for(128, 1, 8, ALEA_PARALLEL_STATIC_BLOCK,
+                                cold_recovery_reader, sys, NULL), ALEA_PARALLEL_OK);
+    ASSERT(alea_system_query_cache_ready(sys, ALEA_CACHE_RAY_RECOVERY));
+    ASSERT(!alea_system_query_cache_ready(sys, ALEA_CACHE_ADJACENCY));
+    ASSERT(!alea_system_query_cache_ready(sys, ALEA_CACHE_SURFACE_BVH));
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_UNIVERSE);
+    ASSERT(!alea_system_query_cache_ready(sys, ALEA_CACHE_RAY_RECOVERY));
+    mcnp_model_destroy(model);
 }
 
 TEST_MAIN()

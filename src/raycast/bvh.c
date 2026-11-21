@@ -19,6 +19,7 @@
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <limits.h>
 
 /* ============================================================================
  * INTERNAL STRUCTURES
@@ -263,7 +264,7 @@ static uint32_t build_recursive(bvh_build_ctx_t* ctx,
     /* Create leaf if few surfaces or max depth */
     if (count <= BVH_LEAF_THRESHOLD || depth > 30) {
         node->left_or_first = (uint32_t)start;
-        node->surface_count = (uint16_t)count;
+        node->surface_count = (uint32_t)count;
         node->axis = 0;
         return node_idx;
     }
@@ -291,7 +292,7 @@ static uint32_t build_recursive(bvh_build_ctx_t* ctx,
     double leaf_cost = count * BVH_INTERSECT_COST;
     if (best_cost >= leaf_cost && count <= BVH_LEAF_THRESHOLD * 2) {
         node->left_or_first = (uint32_t)start;
-        node->surface_count = (uint16_t)count;
+        node->surface_count = (uint32_t)count;
         node->axis = 0;
         return node_idx;
     }
@@ -331,6 +332,12 @@ static uint32_t build_recursive(bvh_build_ctx_t* ctx,
 
 alea_bvh_t* alea_bvh_build(const alea_system_t* sys) {
     if (!sys || alea_vec_count(&sys->surfaces) == 0) {
+        return NULL;
+    }
+
+    /* Traversal returns the number of visited surfaces as an int. */
+    if (sys->surfaces.count > INT_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "surface count exceeds BVH traversal capacity");
         return NULL;
     }
 
@@ -458,7 +465,7 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
 
         if (node->surface_count > 0) {
             /* Leaf node: report all surfaces */
-            for (uint16_t i = 0; i < node->surface_count; i++) {
+            for (uint32_t i = 0; i < node->surface_count; i++) {
                 uint32_t surf_idx = bvh->surface_indices[node->left_or_first + i];
                 callback(surf_idx, userdata);
                 surfaces_tested++;

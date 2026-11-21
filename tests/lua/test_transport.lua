@@ -210,6 +210,26 @@ for _, particle in ipairs({"neutron", "photon"}) do
     assert(replay.tallies[1].sum[1] == result.tallies[1].sum[1])
 end
 
+local gapped = alea.load_mcnp_string([[Thin gap in a filled sphere
+1 0 -3 fill=7
+2 0 3 imp:n=0
+11 0 -1 u=7
+12 0 2 u=7
+
+1 px 1
+2 px 1.00000000005
+3 so 3
+]])
+local gap_config = {source = {particle = "neutron", energy = 2,
+    space = {type = "point", position = {0, 0, 0}},
+    angle = {type = "monodirectional", direction = {1, 0, 0}}}}
+local ok, err = pcall(alea.transport_run, gapped, xsdir, gap_config)
+assert(not ok and err:match("transport failed"))
+gap_config.navigation_validation = "transport"
+local recovered = alea.transport_run(gapped, xsdir, gap_config)
+assert(recovered.leaked == 1 and recovered.recovery.gaps == 1)
+assert(math.abs(recovered.recovery.distance_cm - 5e-11) < 1e-16)
+
 local box = alea.transport_run(system, xsdir, {
     histories = 8,
     source = {particle = "neutron", energy = 14.1,

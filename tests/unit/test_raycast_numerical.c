@@ -373,7 +373,7 @@ TEST(cylinder_x_asymmetric_center) {
 
 TEST(cylinder_y_asymmetric_center) {
     alea_ray_t ray;
-    /* The E-lite surface that exposed the swap: C/Y 424.0 2.9 682.221 */
+    /* Offset cylinder that exposed the swap: C/Y 424.0 2.9 682.221 */
     alea_cylinder_y_data_t cyl = { .center_x = 424.0, .center_z = 2.9,
                                    .radius = 682.221 };
     double t[2];

@@ -226,6 +226,11 @@ TEST(render_filters_reveal_geometry_behind_and_or_clips_union) {
 
     ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
     ASSERT_EQ(fb->cell_id[0], 1);
+    render_pick_t hit;
+    ASSERT_EQ(alea_render_pick(sys, NULL, &cfg, &cam, 0, 0, &hit), 1);
+    ASSERT_EQ(hit.cell_id, 1);
+    ASSERT_EQ(hit.surface_id, 1);
+    ASSERT_NEAR(hit.point[0], -5, EPS);
     int hidden = 1;
     cfg.cell_filter.mode = RENDER_FILTER_EXCLUDE;
     cfg.cell_filter.ids = &hidden;
@@ -233,6 +238,10 @@ TEST(render_filters_reveal_geometry_behind_and_or_clips_union) {
     ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
     ASSERT_EQ(fb->cell_id[0], 2);
     ASSERT_EQ(fb->material_id[0], 2);
+    ASSERT_EQ(alea_render_pick(sys, NULL, &cfg, &cam, 0, 0, &hit), 1);
+    ASSERT_EQ(hit.cell_id, 2);
+    ASSERT_EQ(hit.material_id, 2);
+    ASSERT_NEAR(hit.point[0], 10, EPS);
     cfg.cell_filter.mode = RENDER_FILTER_ALL;
     cfg.cell_filter.ids = NULL;
     cfg.cell_filter.count = 0;
@@ -264,6 +273,7 @@ TEST(render_filters_reveal_geometry_behind_and_or_clips_union) {
     cfg.clip_mode = RENDER_CLIP_AND;
     ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
     ASSERT_EQ(fb->cell_id[0], -1);
+    ASSERT_EQ(alea_render_pick(sys, NULL, &cfg, &cam, 0, 0, &hit), 0);
     cfg.clip_mode = RENDER_CLIP_OR;
     ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
     ASSERT_EQ(fb->cell_id[0], 1);
@@ -278,6 +288,51 @@ TEST(render_filters_reveal_geometry_behind_and_or_clips_union) {
     alea_destroy(sys);
 }
 
+
+typedef struct {
+    atomic_int pixels;
+    int cancel_after_tile;
+} tile_progress_t;
+
+static void count_tile(void* user, const render_framebuffer_t* fb, int x, int y, int w, int h) {
+    tile_progress_t* progress = user;
+    if (x >= 0 && y >= 0 && x+w <= fb->width && y+h <= fb->height)
+        atomic_fetch_add(&progress->pixels, w*h);
+}
+
+static int cancel_after_tile(void* user) {
+    tile_progress_t* progress = user;
+    return progress->cancel_after_tile && atomic_load(&progress->pixels) > 0;
+}
+
+static int stop_this_ray(void* user) {
+    ++*(int*)user;
+    return 1;
+}
+
+TEST(render_cancels_inside_hierarchy_walker_and_reuses_scratch) {
+    alea_system_t* sys = create_test_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 0, -20, 0, 0, 1, 0), 0);
+    alea_ray_first_visible_result_t hit;
+    int polls = 0;
+    scratch.cancelled = stop_this_ray;
+    scratch.cancel_user = &polls;
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 40, 1, NULL, NULL, &scratch, &hit), -1);
+    ASSERT(polls > 0);
+    ASSERT(!alea_interrupted());
+    scratch.cancelled = NULL;
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 40, 1, NULL, NULL, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 1);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
 
 TEST(regional_surface_frames_match_cpu_after_camera_and_visibility_changes) {
     alea_system_t* sys = create_test_scene();
@@ -337,7 +392,15 @@ TEST(regional_surface_frames_match_cpu_after_camera_and_visibility_changes) {
          * replays and compare every output bit with the serial regional frame. */
         size_t n = (size_t)cfg.width * cfg.height;
         for (cfg.threads = 2; cfg.threads <= 8; cfg.threads *= 2) {
-            ASSERT_EQ(alea_render_scene_prepared(sys, prepared, &cfg, &cam, cpu), 0);
+            tile_progress_t progress = {.cancel_after_tile = 1};
+            atomic_init(&progress.pixels, 0);
+            render_updates_t updates = {&progress, cancel_after_tile, count_tile};
+            ASSERT_EQ(alea_render_scene_progressive(sys, prepared, &cfg, &cam, cpu, &updates), 1);
+            ASSERT(!alea_interrupted());
+            progress.cancel_after_tile = 0;
+            atomic_store(&progress.pixels, 0);
+            ASSERT_EQ(alea_render_scene_progressive(sys, prepared, &cfg, &cam, cpu, &updates), 0);
+            ASSERT_EQ(atomic_load(&progress.pixels), cfg.width * cfg.height);
             ASSERT_EQ(memcmp(cpu->cell_id, regional->cell_id, n * sizeof(int)), 0);
             ASSERT_EQ(memcmp(cpu->material_id, regional->material_id, n * sizeof(int)), 0);
             ASSERT_EQ(memcmp(cpu->color, regional->color, 3 * n * sizeof(float)), 0);
@@ -988,6 +1051,7 @@ TEST(render_first_hit_filters_keep_distance_and_normal_in_one_walk) {
     alea_bbox_t domain = {-13,-7,-3,3,-3,3};
     alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
     ASSERT_NOT_NULL(prepared);
+    ASSERT_EQ(alea_regional_prepare_render_bounds(prepared), 0);
     ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 1e15, 1,
         accept_render_cell, &target, &scratch, &hit), 0);
     ASSERT(hit.found);
@@ -996,6 +1060,28 @@ TEST(render_first_hit_filters_keep_distance_and_normal_in_one_walk) {
     ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 19, 0,
         accept_render_cell, &target, &scratch, &hit), 0);
     ASSERT(!hit.found);
+    /* The tail goes away from both material boxes. A certified background
+     * ray has no iterations in the hierarchy walker. */
+    alea_ray_init(&ray, -10, 0, 0, -1, 0, 0);
+    ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 1e15, 1,
+        NULL, NULL, &scratch, &hit), 0);
+    ASSERT(!hit.found);
+    ASSERT_EQ(scratch.step_iterations, 0);
+    /* A clip-plane entry can put the start outside the prepared envelope
+     * (-19 to -1 on X), or leave only part of the first search inside. */
+    for (int x = -18; x >= -20; x -= 2) {
+        alea_ray_init(&ray, x, 0, 0, -1, 0, 0);
+        ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 1e15, 1,
+            NULL, NULL, &scratch, &hit), 0);
+        ASSERT(!hit.found);
+        ASSERT_EQ(scratch.step_iterations, 0);
+    }
+    alea_ray_init(&ray, -20, 0, 0, 1, 0, 0);
+    ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 1e15, 1,
+        accept_render_cell, &target, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 2);
+    ASSERT_NEAR(hit.t, 30, 1e-10);
     alea_prepared_queries_destroy(prepared);
     alea_ray_init(&ray, 12, 0, 0, 1, 0, 0);
     ASSERT_EQ(alea_raycast_render_first_visible_nocache(
@@ -1004,6 +1090,123 @@ TEST(render_first_hit_filters_keep_distance_and_normal_in_one_walk) {
     ASSERT_EQ(hit.cell_id, 2);
     ASSERT_NEAR(hit.t, 0, 1e-10);
     alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+/* The front half of a sphere and its exterior cover a distant positive-X
+ * ray together. Reverse the camera to see through the uncovered half, or
+ * fill that same front half with a universe containing a material layer. */
+TEST(regional_render_tail_respects_world_void_ownership) {
+    for (int fill_first = 0; fill_first <= 1; ++fill_first) {
+        alea_system_t* sys = alea_create();
+        ASSERT_NOT_NULL(sys);
+        int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 10);
+        int half = alea_plane_surface(sys, 2, 1, 0, 0, -0.5);
+        int far = alea_plane_surface(sys, 3, 1, 0, 0, -4);
+        int rear = alea_plane_surface(sys, 4, 1, 0, 0, 4);
+        int mat = alea_add_material(sys, 1);
+        alea_node_id_t front = alea_surface_at(sys, far)->pos_node;
+        alea_node_id_t cap = alea_intersection(sys, alea_surface_at(sys, sphere)->neg_node,
+                                               alea_surface_at(sys, half)->pos_node);
+        int parent = alea_add_cell(sys, 20, cap, ALEA_MATERIAL_VOID, 0, 0);
+        ASSERT(parent >= 0);
+        if (fill_first) {
+            ASSERT_EQ(alea_set_fill(sys, parent, 11, 0), 0);
+            ASSERT(alea_add_cell(sys, 11, front, mat, -1, 11) >= 0);
+            ASSERT(alea_add_cell(sys, 12, alea_surface_at(sys, far)->neg_node,
+                                 ALEA_MATERIAL_VOID, 0, 11) >= 0);
+        }
+        ASSERT(alea_add_cell(sys, 21, alea_surface_at(sys, sphere)->pos_node,
+                             ALEA_MATERIAL_VOID, 0, 0) >= 0);
+        ASSERT(alea_add_cell(sys, 30, front, mat, -1, 0) >= 0);
+        ASSERT(alea_add_cell(sys, 31, alea_surface_at(sys, rear)->neg_node, mat, -1, 0) >= 0);
+        ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        alea_bbox_t domain = {-2,2,-2,2,-2,2};
+        alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
+        ASSERT_NOT_NULL(prepared);
+        ASSERT_EQ(alea_regional_prepare_render_bounds(prepared), 0);
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+        for (int dx = -1; dx <= 1; dx += 2) {
+            alea_ray_t ray;
+            ASSERT_EQ(alea_ray_init(&ray, 0, 0, 0, dx, 0, 0), 0);
+            alea_ray_first_visible_result_t hit;
+            ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0),
+                &ray, 100, 1, NULL, NULL, &scratch, &hit), 0);
+            if (dx > 0 && !fill_first) {
+                ASSERT(!hit.found);
+                ASSERT_EQ(scratch.step_iterations, 0);
+            } else {
+                ASSERT(hit.found);
+                ASSERT_EQ(hit.cell_id, dx < 0 ? 31 : 11);
+                ASSERT_NEAR(hit.t, 4, 1e-9);
+            }
+        }
+        alea_raycast_result_free(&scratch);
+        alea_prepared_queries_destroy(prepared);
+        alea_destroy(sys);
+    }
+}
+
+/* A cut starts outside the index. The two priority voids overlap for only
+ * 0.01 cm near its start, while the retained ray is a billion cm long. */
+TEST(regional_clipped_void_proof_resolves_near_start_of_long_ray) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int left = alea_plane_surface(sys, 1, 1, 0, 0, -11.02);
+    int right = alea_plane_surface(sys, 2, 1, 0, 0, -11.01);
+    int exterior = alea_sphere_surface(sys, 3, 0, 0, 0, 10000);
+    int sphere = alea_sphere_surface(sys, 4, 20, 0, 0, 1);
+    int material = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, left)->neg_node, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, alea_surface_at(sys, right)->pos_node, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 3, alea_surface_at(sys, exterior)->pos_node, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 4, alea_surface_at(sys, sphere)->neg_node, material, -1, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_bbox_t domain = {-2,2,-2,2,-2,2};
+    alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
+    ASSERT_NOT_NULL(prepared);
+    ASSERT_EQ(alea_regional_prepare_render_bounds(prepared), 0);
+    alea_ray_t ray;
+    alea_ray_init(&ray, 10, 0, 0, 1, 0, 0);
+    alea_ray_first_visible_result_t hit;
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 1e9, 1,
+        NULL, NULL, &scratch, &hit), 0);
+    ASSERT(!hit.found);
+    ASSERT_EQ(scratch.step_iterations, 0);
+    alea_raycast_result_free(&scratch);
+    alea_prepared_queries_destroy(prepared);
+    alea_destroy(sys);
+}
+
+TEST(regional_tail_preserves_positive_side_of_one_sheet_cone) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int cone = alea_cone_x_surface_sheet(sys, 1, 0, 0, 0, 1, 1);
+    int plane = alea_plane_surface(sys, 2, 1, 0, 0, 40);
+    alea_node_id_t material = alea_intersection(sys,
+        alea_surface_at(sys, cone)->pos_node, alea_surface_at(sys, plane)->neg_node);
+    int mat = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 10, material, mat, -1, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_bbox_t domain = {-3,3,-3,3,-3,3};
+    alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
+    ASSERT_NOT_NULL(prepared);
+    ASSERT_EQ(alea_regional_prepare_render_bounds(prepared), 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_t ray;
+    alea_ray_init(&ray, 0, 1, 0, -1, 0, 0);
+    alea_ray_first_visible_result_t hit;
+    ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0),
+        &ray, 100, 1, NULL, NULL, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 10);
+    ASSERT_NEAR(hit.t, 40, 1e-8);
+    alea_raycast_result_free(&scratch);
+    alea_prepared_queries_destroy(prepared);
     alea_destroy(sys);
 }
 
@@ -1293,6 +1496,75 @@ TEST(undefined_fill_child_boundaries_preserve_placed_geometry) {
         alea_raycast_result_free(&scratch);
         alea_destroy(sys);
     }
+}
+
+TEST(coincident_fill_exit_uses_incident_surface_and_placed_normal) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int outer = alea_plane_surface(sys, 1, 1, 0, 0, 0);
+    int inner = alea_plane_surface(sys, 2, 0, 1, 1, 0);
+    int mat = alea_add_material(sys, 1);
+    int parent = alea_add_cell(sys, 10, alea_surface_at(sys, outer)->neg_node,
+                               ALEA_MATERIAL_VOID, 0, 0);
+    ASSERT(parent >= 0);
+    /* Local y+z=0 becomes world x-z=0, meeting the parent x=0 on our ray. */
+    double placement[12] = {0,0,0, 0,1,0, 1,0,0, 0,0,-1};
+    ASSERT_EQ(alea_add_transform(sys, 1, placement, 12, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, parent, 1, 1), 0);
+    ASSERT(alea_add_cell(sys, 20, alea_surface_at(sys, inner)->neg_node,
+                         ALEA_MATERIAL_VOID, 0, 1) >= 0);
+    ASSERT(alea_add_cell(sys, 30, alea_surface_at(sys, outer)->pos_node, mat, 1, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_bbox_t domain = {-8,8,-8,8,-8,8};
+    alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
+    ASSERT_NOT_NULL(prepared);
+    alea_ray_t ray;
+    alea_ray_init(&ray, -1, 0, 0, 1, 0, 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    for (int regional = 0; regional <= 1; regional++) {
+        alea_ray_first_visible_result_t hit;
+        ASSERT_EQ(regional
+            ? alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 2, 1,
+                                           NULL, NULL, &scratch, &hit)
+            : alea_raycast_render_first_visible_nocache(sys, &ray, 2, 1,
+                                                       NULL, NULL, &scratch, &hit), 0);
+        ASSERT(hit.found);
+        ASSERT_EQ(hit.cell_id, 30);
+        ASSERT_EQ(hit.t, 1);
+        ASSERT_EQ(hit.surface_id, 2);
+        ASSERT_NEAR(hit.nx, sqrt(0.5), 1e-12);
+        ASSERT_NEAR(hit.ny, 0, 1e-12);
+        ASSERT_NEAR(hit.nz, -sqrt(0.5), 1e-12);
+    }
+    alea_raycast_result_free(&scratch);
+    alea_prepared_queries_destroy(prepared);
+    /* Both physical cards participate in transport even though rendering
+     * needs just one. A reflective parent makes this crossing ambiguous. */
+    const double origin[] = {-1,0,0}, direction[] = {1,0,0};
+    for (int reflective = 0; reflective <= 1; reflective++) {
+        if (reflective)
+            ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_REFLECTIVE), 0);
+        alea_ray_navigator_t* nav = alea_ray_navigator_create(sys);
+        ASSERT_NOT_NULL(nav);
+        alea_nav_location_t location;
+        alea_nav_event_t event;
+        ASSERT_EQ(alea_ray_navigator_restart(nav, origin, direction, &location), 0);
+        ASSERT_EQ(location.cell_id, 20);
+        int rc = alea_ray_navigator_advance(nav, INFINITY, 2, &event);
+        if (reflective) {
+            ASSERT_EQ(rc, -1);
+            ASSERT_EQ(alea_error_code(), ALEA_ERR_INVALID_STATE);
+            ASSERT(strstr(alea_error(), "boundary action is ambiguous") != NULL);
+        } else {
+            ASSERT_EQ(rc, 0);
+            ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+            ASSERT_EQ(event.surface_id, 2);
+            ASSERT_EQ(event.after.cell_id, 30);
+        }
+        alea_ray_navigator_destroy(nav);
+    }
+    alea_destroy(sys);
 }
 
 TEST(undefined_fill_child_search_respects_parent_and_ray_limits) {

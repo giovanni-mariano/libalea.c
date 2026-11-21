@@ -50,11 +50,12 @@ typedef struct {
     uint32_t* point_bvh_indices;
     bool point_bvh_built;
     bool point_bvh_disabled;
-    /* Optional ordered cards for nearest-only recovery, owned by this cache. */
+    /* Optional ordered cards for ray recovery, owned by this cache. */
     struct recovery_plane_index* recovery_planes;
     uint32_t* recovery_surfaces;
     size_t recovery_surface_count;
     bool recovery_surfaces_attempted;
+    bool recovery_surfaces_exact;
     /* Ordered fill/lattice cells; ready also represents a complete empty list. */
     size_t* recovery_child_cells;
     size_t recovery_child_count;

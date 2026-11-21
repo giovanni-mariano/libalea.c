@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
     assert(feeder);
     state_t state = {.value=1};
     int rc = mode>=3 ? alea_sdl_view_progressive("Test","Test controls",64,64,&state,sizeof(state),
-        slow_draw,save_frame,change_view,NULL,buttons,6,prepare_quality,bind_job) : mode==2 ? alea_sdl_view_ex("Test","Test controls",64,64,&state,sizeof(state),
+        slow_draw,save_frame,change_view,NULL,buttons,6,prepare_quality,bind_job,NULL) : mode==2 ? alea_sdl_view_ex("Test","Test controls",64,64,&state,sizeof(state),
         slow_draw,save_frame,change_view,NULL,buttons,6,prepare_quality) :
         alea_sdl_view("Test","Test controls",64,64,&state,sizeof(state),
         slow_draw,save_frame,change_view,NULL,buttons,6);

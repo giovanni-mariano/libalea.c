@@ -42,6 +42,11 @@ alea_parallel_status_t alea_parallel_for(
     alea_parallel_schedule_t schedule, alea_parallel_range_fn callback,
     void* context, size_t* out_actual_workers);
 
+/* A one-shot team never waits on the shared executor's submission lock.
+ * Use when preparing a cache that concurrent executor callbacks may request. */
+alea_parallel_status_t alea_parallel_for_independent(size_t item_count, size_t grain_size,
+                                                     alea_parallel_range_fn callback, void* context);
+
 const char* alea_parallel_status_string(alea_parallel_status_t status);
 
 #endif /* ALEA_PARALLEL_H */

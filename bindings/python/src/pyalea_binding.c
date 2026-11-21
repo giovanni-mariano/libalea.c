@@ -435,7 +435,7 @@ static PyObject* build_node_tree(const alea_system_t* sys, alea_node_id_t node) 
     return result;
 }
 
-static int ensure_query_acceleration(PyAleaSystemObject* self) {
+static int prepare_acceleration(PyAleaSystemObject* self, int (*prepare)(alea_system_t*)) {
     if (!self->sys) {
         PyErr_SetString(PyExc_RuntimeError, "System not initialized");
         return -1;
@@ -443,7 +443,7 @@ static int ensure_query_acceleration(PyAleaSystemObject* self) {
     int rc;
     sighandler_func old_sigint = install_sigint();
     Py_BEGIN_ALLOW_THREADS
-    rc = alea_prepare_query_acceleration(self->sys);
+    rc = prepare(self->sys);
     Py_END_ALLOW_THREADS
     if (restore_sigint(old_sigint)) return -1;
     if (rc != 0) {
@@ -451,6 +451,15 @@ static int ensure_query_acceleration(PyAleaSystemObject* self) {
         return -1;
     }
     return 0;
+}
+
+static int ensure_point_lookup(PyAleaSystemObject* self) {
+    if (alea_selected_query_stats(self->sys, NULL)) return 0;
+    return prepare_acceleration(self, alea_prepare_point_lookup);
+}
+
+static int ensure_query_acceleration(PyAleaSystemObject* self) {
+    return prepare_acceleration(self, alea_prepare_query_acceleration);
 }
 
 static alea_slice_curves_t* get_slice_curves_allow_threads(
@@ -574,6 +583,10 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "build_spatial_index()\n\nBuild the hierarchical spatial index / query caches for fast queries."},
     {"prepare_query_acceleration", (PyCFunction)PyAleaSystem_prepare_query_acceleration, METH_NOARGS,
      "prepare_query_acceleration()\n\nBuild all query caches used by point queries, grids, and raycasts."},
+    {"prepare_ray_acceleration", (PyCFunction)PyAleaSystem_prepare_ray_acceleration, METH_VARARGS | METH_KEYWORDS,
+     "prepare_ray_acceleration(bounds=None)\n\nPrepare repeated finite geometry-only ray batches in world bounds."},
+    {"prepare_point_acceleration", (PyCFunction)PyAleaSystem_prepare_point_acceleration, METH_NOARGS,
+     "prepare_point_acceleration()\n\nPrepare the world point index. Repeated lookups add child bounds on demand."},
     {"get_universe", (PyCFunction)PyAleaSystem_get_universe, METH_VARARGS,
      "get_universe(universe_id) -> dict\n\nGet universe info."},
 
@@ -793,6 +806,9 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "Cast ray through geometry (global surface-BVH pipeline). 'segments' is\n"
      "the precedence-resolved cell list; 'hits' is the raw global crossing\n"
      "list [{t, surface_id}, ...] underneath it."},
+    {"diagnose_substep_fill", (PyCFunction)PyAleaSystem_diagnose_substep_fill, METH_VARARGS,
+     "diagnose_substep_fill(ox, oy, oz, dx, dy, dz, t) -> dict or None\n\n"
+     "Return the ordered surfaces and width of a verified sub-step undefined fill."},
     {"classify_ray_intervals", (PyCFunction)PyAleaSystem_classify_ray_intervals, METH_VARARGS,
      "classify_ray_intervals(ox, oy, oz, dx, dy, dz, t_max) -> list of findings\n\n"
      "Classify elementary ray intervals by complete cell ownership:\n"
@@ -1145,8 +1161,8 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "Set include_paths=True to attach resolved hierarchy paths to segments."},
     {"raycast_hier_fast_batch", (PyCFunction)PyAleaSystem_raycast_hier_fast_batch,
      METH_VARARGS | METH_KEYWORDS,
-     "raycast_hier_fast_batch(origins, directions, t_max=0, include_paths=False) -> list[list[dict]]\n\n"
-     "Trace independent rays in parallel using the hierarchical segment tracer."},
+     "raycast_hier_fast_batch(origins, directions, t_max=0, include_paths=False, include_surfaces=True) -> list[list[dict]]\n\n"
+     "Trace rays in parallel. With a prepared ray index, finite geometry-only batches use regional traversal."},
     {"trace_ray_slice_compact", (PyCFunction)PyAleaSystem_trace_ray_slice_compact,
      METH_VARARGS | METH_KEYWORDS,
      "trace_ray_slice_compact(origin, normal, up, u_min, u_max, v_min, v_max, row_count,\n"

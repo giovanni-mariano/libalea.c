@@ -1248,7 +1248,7 @@ static void test_camera(render_config_t* cfg) {
     cfg->target[0]=cfg->target[1]=cfg->target[2]=0;
 }
 
-/* Rounded ITER cylinder coefficients have a tiny nonzero axial eigenvalue.
+/* Rounded cylinder coefficients have a tiny nonzero axial eigenvalue.
  * Solving that direction moves the packing origin about 1e8 units away and
  * creates false owners at points well away from the actual boundary. */
 TEST(metal_nearly_singular_quadric_classification) {

@@ -30,13 +30,25 @@ typedef struct {
     int proposed_surface, recovered_surface;
 } ray_profile_recovery_event;
 
+/* Deepest-owner descent is recursive. Self time and membership exclude
+ * child frames. Recovery time includes work below the boundary retry. */
+typedef struct {
+    uint64_t lookups, membership_calls, enumerations, candidates, recoveries;
+    double lookup_seconds, membership_seconds, enumeration_seconds, recovery_seconds;
+} ray_profile_universe;
+
+#ifndef RAY_PROFILE_RECOVERIES
 #define RAY_PROFILE_RECOVERIES 1024u
+#endif
 #define RAY_PROFILE_LISTS 4096u
 #define RAY_PROFILE_TYPES 32u
 typedef struct {
     double seconds[RAY_STAGES], last;
     uint64_t calls[RAY_STAGES], csg_nodes, csg_primitives, dropped_roots;
     int enabled, stage;
+    ray_profile_universe *universes, *active_universe;
+    double universe_start, membership_start;
+    uint64_t membership_calls_start;
     ray_profile_root *roots;
     ray_profile_list *lists;
     ray_profile_recovery_event *recoveries;
@@ -44,7 +56,8 @@ typedef struct {
     uint64_t dropped_recoveries;
     uint64_t dropped_lists, recovery_cache_hits, plane_index_groups, plane_index_pruned;
     uint64_t recovery_root_builds, recovery_root_tests, recovery_root_queries;
-    uint64_t prepared_card_checks_reused;
+    uint64_t prepared_card_checks_reused, cached_empty_windows;
+    size_t peak_root_bytes;
     uint64_t indexed_root_lists, roots_sorted;
     uint64_t fill_passes, fill_improved, fill_children, fill_duplicates;
     uint64_t fill_bbox_rejected, fill_descents;
@@ -54,7 +67,8 @@ typedef struct {
 } ray_profile_state;
 extern ALEA_THREAD_LOCAL ray_profile_state alea_ray_profile;
 #define RAY_PROFILE_ROOTS 131072u
-int alea_ray_profile_start(void);
+int alea_ray_profile_start(size_t universe_count);
+void alea_ray_profile_switch_universe(ray_profile_universe* next);
 void alea_ray_profile_stop(void);
 void alea_ray_profile_free(void);
 int alea_ray_profile_enter(int stage);

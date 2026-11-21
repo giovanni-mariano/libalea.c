@@ -52,6 +52,7 @@ typedef struct alea_cell_entry {
     // Temperature (Kelvin, 0.0 = not set)
     double temperature;
     unsigned int has_temperature : 1;
+    bool surface_index_exact;  /* Every tree leaf matches its indexed card and primitive. */
 
     int universe_id;        // Which universe this cell belongs to (0 = base)
     int fill_universe;      // If >0, this cell is filled with this universe

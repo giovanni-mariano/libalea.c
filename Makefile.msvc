@@ -172,6 +172,7 @@ RAYCAST_OBJS = \
 	$(BUILD)\raycast\regional_trace.obj \
 	$(BUILD)\raycast\interval_build.obj \
 	$(BUILD)\raycast\ray_request.obj \
+	$(BUILD)\raycast\ray_substep.obj \
 	$(BUILD)\raycast\ray_coverage.obj \
 	$(BUILD)\raycast\ray_coverage_api.obj \
 	$(BUILD)\raycast\ray_intersect.obj \
@@ -631,6 +632,9 @@ $(BUILD)\raycast\regional_trace.obj: $(SRC)\raycast\regional\regional_trace.c di
 
 $(BUILD)\raycast\ray_request.obj: $(SRC)\raycast\ray_request.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_request.c
+
+$(BUILD)\raycast\ray_substep.obj: $(SRC)\raycast\ray_substep.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_substep.c
 
 $(BUILD)\raycast\ray_coverage.obj: $(SRC)\raycast\ray_coverage.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_coverage.c

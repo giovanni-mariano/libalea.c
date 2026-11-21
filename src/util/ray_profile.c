@@ -8,14 +8,19 @@
 ALEA_THREAD_LOCAL ray_profile_state alea_ray_profile;
 
 void alea_ray_profile_free(void) {
+    free(alea_ray_profile.universes);
     free(alea_ray_profile.roots);
     free(alea_ray_profile.lists);
     free(alea_ray_profile.recoveries);
     memset(&alea_ray_profile, 0, sizeof(alea_ray_profile));
 }
 
-int alea_ray_profile_start(void) {
+int alea_ray_profile_start(size_t universe_count) {
     alea_ray_profile_free();
+    if (universe_count) {
+        alea_ray_profile.universes = calloc(universe_count, sizeof(ray_profile_universe));
+        if (!alea_ray_profile.universes) return -1;
+    }
     alea_ray_profile.roots = calloc(RAY_PROFILE_ROOTS, sizeof(ray_profile_root));
     alea_ray_profile.lists = calloc(RAY_PROFILE_LISTS, sizeof(ray_profile_list));
     alea_ray_profile.recoveries = calloc(RAY_PROFILE_RECOVERIES, sizeof(ray_profile_recovery_event));
@@ -26,6 +31,22 @@ int alea_ray_profile_start(void) {
     alea_ray_profile.enabled = 1;
     alea_ray_profile.last = alea_monotonic_seconds();
     return 0;
+}
+
+/* Switch only at descent boundaries, after any membership call has returned
+ * and its exclusive time has been committed to the stage counter. */
+void alea_ray_profile_switch_universe(ray_profile_universe* next) {
+    ray_profile_state* p = &alea_ray_profile;
+    double now = alea_monotonic_seconds();
+    if (p->active_universe) {
+        p->active_universe->lookup_seconds += now - p->universe_start;
+        p->active_universe->membership_seconds += p->seconds[RAY_MEMBERSHIP] - p->membership_start;
+        p->active_universe->membership_calls += p->calls[RAY_MEMBERSHIP] - p->membership_calls_start;
+    }
+    p->universe_start = now;
+    p->membership_start = p->seconds[RAY_MEMBERSHIP];
+    p->membership_calls_start = p->calls[RAY_MEMBERSHIP];
+    p->active_universe = next;
 }
 
 int alea_ray_profile_enter(int stage) {

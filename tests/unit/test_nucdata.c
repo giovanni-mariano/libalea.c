@@ -9,6 +9,7 @@
 
 #include "alea_nucdata.h"
 #include "alea_transport.h"
+#include "transport_recovery_fixture.h"
 #include "alea_source.h"
 #include "alea.h"
 #include "core/alea_system.h"
@@ -5148,6 +5149,28 @@ TEST(fixed_neutron_transport_preserves_optical_depth_across_cells_and_void) {
         results[1].track_length[0] + results[1].track_length[1], 1e-7);
     ASSERT_NEAR(results[0].track_length[1], results[1].track_length[2], 1e-7);
     ASSERT_NEAR(results[0].track_length[2], results[1].track_length[3], 1e-7);
+    alea_transport_result_free(&results[0]);
+    alea_transport_result_free(&results[1]);
+    options.histories = 64;
+    for (int gap = 0; gap <= 1; ++gap) {
+        alea_system_t* sys = recovery_absorber(gap);
+        ASSERT_NOT_NULL(sys);
+        alea_nuc_cell_bindings_t* binding = NULL;
+        ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
+            ALEA_NUC_BIND_NEUTRON, &req, NULL, &binding), ALEA_OK);
+        options.navigation_validation = gap ? ALEA_NAV_VALIDATE_TRANSPORT : ALEA_NAV_VALIDATE_STRICT;
+        ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source, &options,
+            &results[gap], NULL), ALEA_OK);
+        alea_nuc_cell_bindings_free(binding);
+        alea_destroy(sys);
+    }
+    ASSERT(results[1].leaked > 0);
+    ASSERT_EQ(results[1].leaked, results[0].leaked);
+    ASSERT_EQ(results[1].absorbed, results[0].absorbed);
+    ASSERT_EQ(results[1].recovery.gaps, results[1].leaked);
+    ASSERT_NEAR(results[1].recovery.distance_cm, results[1].leaked * 5e-11, 1e-14);
+    ASSERT_NEAR(results[0].track_length[1], results[1].track_length[1], 1e-12);
+    ASSERT_NEAR(results[0].track_length[2], results[1].track_length[2], 1e-12);
     alea_transport_result_free(&results[0]);
     alea_transport_result_free(&results[1]);
     alea_nuc_xsdir_free(xsdir);

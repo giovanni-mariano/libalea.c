@@ -20,10 +20,27 @@ typedef struct {
     unsigned flags;
 } recovery_context_key_t;
 typedef struct {
-    double t;
-    uint32_t ordinal;
-    uint32_t root;
+    /* Byte storage keeps consecutive records compact without unaligned
+     * double accesses. Distances retain their native double representation. */
+    unsigned char distance[sizeof(double)];
+    uint32_t order;
 } recovery_root_t;
+
+/* Each card yields at most four roots. The root budget bounds the card
+ * ordinal well below 2^30, so this key preserves card and root tie order. */
+static inline recovery_root_t recovery_root_make(double t, uint32_t ordinal, unsigned root) {
+    recovery_root_t record;
+    memcpy(record.distance, &t, sizeof(t));
+    record.order = ordinal * 4u + root;
+    return record;
+}
+
+static inline double recovery_root_distance(const recovery_root_t* record) {
+    double t;
+    memcpy(&t, record->distance, sizeof(t));
+    return t;
+}
+
 #define RECOVERY_ROOT_BUDGET (8u * 1024u * 1024u)
 typedef struct {
     recovery_context_key_t key;
@@ -65,9 +82,10 @@ static inline void recovery_context_destroy(recovery_context_t* table) {
 
 static inline int recovery_root_compare(const void* a, const void* b) {
     const recovery_root_t *x=a, *y=b;
-    if (x->t != y->t) return x->t < y->t ? -1 : 1;
-    if (x->ordinal != y->ordinal) return x->ordinal < y->ordinal ? -1 : 1;
-    return (x->root > y->root) - (x->root < y->root);
+    double tx = recovery_root_distance(x);
+    double ty = recovery_root_distance(y);
+    if (tx != ty) return tx < ty ? -1 : 1;
+    return (x->order > y->order) - (x->order < y->order);
 }
 
 static inline const recovery_root_t* recovery_sorted_root_first(
@@ -75,11 +93,11 @@ static inline const recovery_root_t* recovery_sorted_root_first(
     size_t first=0, end=count;
     while (first<end) {
         size_t mid=first+(end-first)/2;
-        double t=roots[mid].t;
+        double t=recovery_root_distance(&roots[mid]);
         if (t<lo || t<=excluded) first=mid+1;
         else end=mid;
     }
-    return first<count && roots[first].t<=hi ? &roots[first] : NULL;
+    return first<count && recovery_root_distance(&roots[first])<=hi ? &roots[first] : NULL;
 }
 
 /* Only the bin assignment is approximate. It is monotone for the finite,
@@ -104,11 +122,14 @@ static inline recovery_root_t* recovery_bin_roots(
     *bytes = count*sizeof(*roots)+sizeof(offsets);
     recovery_root_t* indexed = malloc(*bytes);
     if (!indexed) return NULL;
-    for (size_t i=0; i<count; ++i) ++offsets[1+recovery_root_bin(roots[i].t,lo,hi)];
+    for (size_t i=0; i<count; ++i) {
+        unsigned bin = recovery_root_bin(recovery_root_distance(&roots[i]),lo,hi);
+        ++offsets[bin + 1];
+    }
     for (unsigned i=0; i<RECOVERY_ROOT_BINS; ++i) offsets[i+1] += offsets[i];
     memcpy(cursor,offsets,sizeof(cursor));
     for (size_t i=0; i<count; ++i) {
-        unsigned bin = recovery_root_bin(roots[i].t,lo,hi);
+        unsigned bin = recovery_root_bin(recovery_root_distance(&roots[i]),lo,hi);
         indexed[cursor[bin]++] = roots[i];
     }
     memcpy(indexed+count,offsets,sizeof(offsets));
@@ -131,8 +152,9 @@ static inline const recovery_root_t* recovery_root_first(
         const recovery_root_t* best = NULL;
         if (count <= 16) {
             for (size_t i=0; i<count; ++i) {
-                double t = roots[i].t;
-                if (t>=lo && t<=hi && t>excluded && (!best || t<best->t)) best = &roots[i];
+                double t = recovery_root_distance(&roots[i]);
+                if (t>=lo && t<=hi && t>excluded && (!best || t<recovery_root_distance(best)))
+                    best = &roots[i];
             }
         } else {
             uint64_t bit = UINT64_C(1)<<bin;

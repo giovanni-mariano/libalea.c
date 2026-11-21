@@ -162,6 +162,7 @@ typedef struct {
     double* track_length;
     double* track_length_squared;
     alea_tally_results_t* tallies; /* owned result; NULL without tally_plan */
+    alea_nav_recovery_stats_t recovery;
 } alea_transport_result_t;
 
 typedef struct {

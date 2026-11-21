@@ -242,6 +242,21 @@ int render_scene(alea_system_t* sys,
                  const render_camera_t* cam,
                  render_framebuffer_t* fb);
 
+typedef struct {
+    int cell_id, material_id;
+    int surface_id;  /**< -1 when there is no model surface at the entry. */
+    int clip_plane;  /**< Zero-based clip plane, or -1 for a geometry hit. */
+    double point[3];
+} render_pick_t;
+
+/** Trace the center of a full-resolution pixel with the camera's clips and
+ * visibility filters. Return 1 and fill hit on success, 0 for background, or
+ * -1 on error. An optional prepared handle requires exclusive use during
+ * this call, just as for a prepared frame. */
+int alea_render_pick(alea_system_t* sys, alea_prepared_queries_t* prepared,
+                     const render_config_t* cfg, const render_camera_t* cam,
+                     int x, int y, render_pick_t* hit);
+
 /** Render a surface frame with a reusable regional query handle for this model.
  * Tiles share the regional index and use private traversal scratch. cfg->threads
  * controls the worker count. Call from one thread at a time. Camera and
@@ -249,6 +264,24 @@ int render_scene(alea_system_t* sys,
 int alea_render_scene_prepared(alea_system_t* sys, alea_prepared_queries_t* prepared,
                                const render_config_t* cfg, const render_camera_t* cam,
                                render_framebuffer_t* fb);
+
+/** CPU surface rendering with an optional prepared index. Worker threads call
+ * tile_done after finishing disjoint rectangles. A completed tile is stable
+ * until return. Synchronize before reading tiles completed by other workers.
+ * Callbacks must be thread-safe.
+ * cancelled may be polled from inside a ray and must stay true once set.
+ * Returns 0 when complete, 1 on local cancellation, or -1 on error. All
+ * workers have stopped using the framebuffer and user data before return. */
+typedef struct {
+    void* user;
+    int (*cancelled)(void* user);
+    void (*tile_done)(void* user, const render_framebuffer_t* fb,
+                      int x, int y, int width, int height);
+} render_updates_t;
+
+int alea_render_scene_progressive(alea_system_t* sys, alea_prepared_queries_t* prepared,
+                                  const render_config_t* cfg, const render_camera_t* cam,
+                                  render_framebuffer_t* fb, const render_updates_t* updates);
 
 /**
  * @brief Post-process: darken edges where cell ID changes

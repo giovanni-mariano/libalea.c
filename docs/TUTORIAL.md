@@ -21,7 +21,7 @@ The most common starting point is an existing MCNP input file:
 #include <stdio.h>
 
 int main(void) {
-    mcnp_model_t* model = mcnp_load("iter_blanket.inp");
+    mcnp_model_t* model = mcnp_load("tests/data/simple_box.mcnp");
     if (!model) {
         fprintf(stderr, "Load failed: %s\n", alea_error());
         return 1;

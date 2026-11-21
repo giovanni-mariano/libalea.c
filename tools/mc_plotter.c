@@ -2015,7 +2015,7 @@ static int plot_interactive(alea_system_t* sys, const plot_params_t* p) {
             "R: reset   S: save   H: help   Q / Esc: quit",
             p->width, p->height, &state, sizeof(state), plot_view_draw,
             plot_view_save, plot_view_input, plot_view_active,
-            metal_buttons, metal_count, NULL, plot_view_bind);
+            metal_buttons, metal_count, NULL, plot_view_bind, NULL);
     }
     return alea_sdl_view("Alea slice",
         "Drag / arrows: pan   Wheel / +/-: zoom\n"

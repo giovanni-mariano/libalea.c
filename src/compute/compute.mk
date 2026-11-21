@@ -228,11 +228,11 @@ $(COMPUTE_BIN_DIR)/benchmark_render$(EXEEXT): benchmarks/render_compute.c $(LIB_
 benchmark-render-compute: compute $(COMPUTE_BIN_DIR)/benchmark_render$(EXEEXT)
 	@$(COMPUTE_BIN_DIR)/benchmark_render$(EXEEXT)
 
-$(COMPUTE_BIN_DIR)/benchmark_render_model$(EXEEXT): benchmarks/render_model.c $(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE)
+$(COMPUTE_BIN_DIR)/benchmark_render_model$(EXEEXT): benchmarks/render_model.c benchmarks/render_benchmark_view.h $(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE)
 	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) $< \
 		$(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
 
-$(COMPUTE_BIN_DIR)/benchmark_render_progressive$(EXEEXT): benchmarks/render_progressive.c $(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE)
+$(COMPUTE_BIN_DIR)/benchmark_render_progressive$(EXEEXT): benchmarks/render_progressive.c benchmarks/render_benchmark_view.h $(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE)
 	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) $< \
 		$(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
 

@@ -7,7 +7,7 @@
  * @brief Ray-primitive intersection math
  *
  * Standard analytical ray-surface intersection formulas.
- * All functions assume ray direction is normalized.
+ * Roots use the parameter of the supplied ray, including transformed local rays.
  */
 
 #include "util/ray_profile.h"
@@ -70,33 +70,32 @@ int ray_intersect_sphere(const alea_ray_t* ray,
      * Let L = O - C
      * |L + t*D|^2 = r^2
      * t^2|D|^2 + 2t(L.D) + |L|^2 - r^2 = 0
-     *
-     * Since D is normalized, |D|^2 = 1
-     * t^2 + 2t(L.D) + |L|^2 - r^2 = 0
+     * D is in the sphere's frame and can have non-unit length.
      */
     double lx = ray->ox - sphere->center_x;
     double ly = ray->oy - sphere->center_y;
     double lz = ray->oz - sphere->center_z;
 
-    /* a = |D|^2 = 1 (normalized), b_half = L.D, c = |L|^2 - r^2 */
+    double a = ray->dx * ray->dx + ray->dy * ray->dy + ray->dz * ray->dz;
+    if (!(a > 0.0)) return 0;
     double b_half = lx * ray->dx + ly * ray->dy + lz * ray->dz;
-    /* r^2 - |L x D|^2 is algebraically identical to b_half^2 - c but avoids
+    /* a*r^2 - |L x D|^2 is algebraically identical to b_half^2 - a*c but avoids
      * subtracting two O(|L|^2) values for distant spheres. */
     double cx = ly * ray->dz - lz * ray->dy;
     double cy = lz * ray->dx - lx * ray->dz;
     double cz = lx * ray->dy - ly * ray->dx;
-    double radius_sq = sphere->radius * sphere->radius;
+    double scaled_radius_sq = a * (sphere->radius * sphere->radius);
     double cross_sq = cx * cx + cy * cy + cz * cz;
-    double discriminant = radius_sq - cross_sq;
+    double discriminant = scaled_radius_sq - cross_sq;
     double discriminant_tol = 16.0 * DBL_EPSILON *
-        (fabs(radius_sq) + fabs(cross_sq));
+        (fabs(scaled_radius_sq) + fabs(cross_sq));
 
     if (discriminant < -discriminant_tol) return 0;
     if (discriminant < 0) discriminant = 0;
 
     double sqrt_disc = sqrt(discriminant);
-    t_out[0] = -b_half - sqrt_disc;
-    t_out[1] = -b_half + sqrt_disc;
+    t_out[0] = (-b_half - sqrt_disc) / a;
+    t_out[1] = (-b_half + sqrt_disc) / a;
 
     if (t_out[0] > t_out[1]) {
         double tmp = t_out[0];

@@ -4,6 +4,7 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "alea_compute.h"
+#include "render_benchmark_view.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +24,7 @@ static int progress(void* user,const render_framebuffer_t* image,size_t done,siz
     return p->cancel>0 && now-p->start>=p->cancel;
 }
 int main(int argc,char** argv) {
-    if(argc!=2 && argc!=4 && argc!=5 && argc!=6){fprintf(stderr,"Usage: %s MODEL [WIDTH HEIGHT [CANCEL_MS [VIEW]]]\nITER VIEW 1=cutaway, 2=opposite cutaway, 3=exterior, 4=component close-up. Zero CANCEL_MS compares completed pixels against ordinary rendering.\n",argv[0]);return 1;}
+    if(argc!=2 && argc!=4 && argc!=5 && argc!=6){fprintf(stderr,"Usage: %s MODEL [WIDTH HEIGHT [CANCEL_MS [VIEW]]]\nModel-relative VIEW 1=cutaway, 2=opposite cutaway, 3=exterior, 4=center close-up. Zero CANCEL_MS compares completed pixels against ordinary rendering.\n",argv[0]);return 1;}
     int w=argc>=4?integer(argv[2],1,4096):16,h=argc>=4?integer(argv[3],1,4096):12,ms=argc>=5?integer(argv[4],0,3600000):0,view=argc==6?integer(argv[5],1,4):1;
     if(w<0 || h<0 || ms<0 || view<0)return 1;
     setbuf(stdout,NULL);signal(SIGINT,stop);signal(SIGTERM,stop);
@@ -31,11 +32,12 @@ int main(int argc,char** argv) {
     double start=seconds();mcnp_model_t* model=mcnp_load(argv[1]);if(!model){fprintf(stderr,"%s\n",alea_error());return 1;}
     printf("Load %.3f s\n",seconds()-start);
     render_config_t cfg;render_config_init(&cfg);cfg.width=w;cfg.height=h;cfg.log_level=0;
-    cfg.eye_set=cfg.target_set=1;cfg.eye[0]=1800;cfg.eye[1]=-2200;cfg.eye[2]=1400;
-    cfg.num_clips=1;cfg.clips[0]=(render_clip_plane_t){{0,1,0},0};
-    if(view==2){cfg.eye[0]=-1800;cfg.eye[1]=2200;cfg.eye[2]=1000;cfg.clips[0].normal[1]=-1;}
-    if(view==3)cfg.num_clips=0;
-    if(view==4){cfg.eye[0]=300;cfg.eye[1]=80;cfg.eye[2]=-120;cfg.target[0]=300;cfg.target[1]=300;cfg.target[2]=-200;cfg.num_clips=0;}
+    if (benchmark_set_view(&cfg, model->sys, view) != 0) {
+        fprintf(stderr, "Cannot fit benchmark camera to model bounds\n");
+        render_config_free(&cfg);
+        mcnp_model_destroy(model);
+        return 1;
+    }
     printf("View %d, %dx%d, AA1, cancel %d ms\n",view,w,h,ms);
     render_camera_t camera;alea_compute_t* gpu=NULL;render_framebuffer_t* image=NULL;render_framebuffer_t* baseline=NULL;int status=1;
     if(render_camera_setup(&camera,&cfg,model->sys))goto done;

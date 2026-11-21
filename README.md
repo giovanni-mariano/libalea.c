@@ -92,11 +92,34 @@ and headers. The MSVC archives package the `.lib` static libraries and headers.
 All builds use the vendored TinyPar backend by default and have no OpenMP
 runtime dependency.
 
-Build the interactive CPU viewer with `make tools USE_SDL=1`. Run
-`bin/render3d model.i --backend regional --interactive` to prepare a regional
-index once and reuse it for surface and shadow rays as you move the camera.
-Both CPU backends render tiles in parallel. Set `--threads N` to limit the
-worker count. Use the default CPU backend for X-ray rendering.
+Build the interactive CPU viewer with `make tools USE_SDL=1` and run
+`bin/render3d model.i --interactive`. Click a visible surface to inspect its cell, material, boundary, and world coordinates.
+Dragging with the left button or using the arrow keys then orbits around the picked
+point. Press **I** or click **Probe** to open a strip below the image. After two
+surface picks it shows the straight-line distance between them in cm.
+**Hide cell** and **Isolate cell** apply to every placement of the picked cell ID.
+**XY section**, **XZ section**, and **YZ section** open the corresponding plane
+through the latest pick in a separate window. The picked cell appears in gold.
+For a custom section, click two surfaces in order. Under **Last two picks**,
+choose **X up**, **Y up**, or **Z up**. The plane passes through both points
+with that world axis vertical. The section marks the first pick **A** and the second **B**, with A to the left of B.
+If the points line up along the chosen axis, choose another axis.
+
+In the section window, drag or use the arrow keys to pan. The wheel or **+ / −**
+zooms. **Page Up / Page Down** steps perpendicular to the plane, **R** restores
+the opening view, and **Esc** closes the section. You can navigate the 3D view
+independently and choose a section again to update the window.
+Press **M** or click **Materials** to search by ID or name and
+isolate a material. **Show all** restores visibility. Toggle the open tool to
+reclaim the image area. A background click keeps the previous pivot. Press **R**
+to reset the camera, picks, and visibility. CPU surface views display completed tiles as they arrive. Moving the
+camera cancels the previous preview or refinement. Saves render the full image
+for the camera position at the time of the request. Surface views start on the hierarchy.
+After displaying a preview that took at least 150 ms, the viewer builds a
+regional index in the background. Subsequent frames reuse it for surface and
+shadow rays. X-ray views use the hierarchy. For a lower memory footprint,
+choose `--backend cpu`. To build the regional index before opening the window,
+choose `--backend regional`. Set `--threads N` to limit render tile workers.
 
 The optional compute module provides Metal FP32 surface rendering and CPU/Metal
 point classification for nested transformed fills and rectangular lattices.

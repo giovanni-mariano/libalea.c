@@ -186,6 +186,15 @@ typedef struct {
     size_t memory_bytes;
 } alea_hier_spatial_stats_t;
 
+bool alea_hier_spatial_has_cell_tree(const alea_system_t* sys, int universe_id);
+bool alea_ray_owner_candidate_contains(const alea_system_t* sys, uint32_t cell,
+                                       double x, double y, double z, int crossed_surface);
+
+/* Optional bounds correspond to indices in definition order and must cover
+ * the query coordinates. The counter counts exact membership calls. */
+struct alea_node_bbox;
+int alea_scan_ordered_cells(const alea_system_t* sys, const alea_size_vec_t* indices,
+                            const struct alea_node_bbox* bounds, double x, double y, double z, size_t* tested);
 int alea_hier_spatial_index_build(alea_system_t* sys);
 void alea_hier_spatial_index_free(alea_hier_spatial_index_t* idx);
 const alea_hier_spatial_stats_t*
@@ -457,18 +466,6 @@ int alea_hier_spatial_check_lattice_placement_canonical_ancestors(
     double y,
     double z);
 
-/**
- * @brief Return the precomputed per-cell fill transform (forward + inverse)
- *        for `cell_index`, or NULL if the hier index is not built or this
- *        cell has no fill.
- *
- * Cached at hier-index build time so callers in hot loops can skip the
- * per-pixel `alea_matrix_from_mcnp` + `alea_matrix_invert` work. The returned
- * pointer is owned by the hier index and valid until it is destroyed.
- */
-const alea_matrix_t*
-alea_hier_spatial_get_cell_fill_matrix(const alea_system_t* sys,
-                                       uint32_t cell_index);
 bool alea_hier_spatial_index_needs_rebuild(const alea_system_t* sys);
 
 /* Debug: total candidates pushed across all universes in the current query. */

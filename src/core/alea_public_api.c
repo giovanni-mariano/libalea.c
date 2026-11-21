@@ -17,6 +17,7 @@
 #include "core/alea_eval.h"
 #include "core/alea_void.h"
 #include "core/alea_universe.h"
+#include "raycast/regional/interval_index.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_simplify.h"
 #include "primitives/primitive_create.h"
@@ -24,6 +25,7 @@
 #include "primitives/bbox.h"
 #include "util/alea_log.h"
 #include "util/alea_parallel.h"
+#include "util/compat.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -378,22 +380,17 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         }
     }
 
-    /* Clone universes: shallow copy then NULL out index data */
-    CLONE_VEC(clone->universes, sys->universes, alea_universe_t);
-    for (size_t i = 0; i < alea_vec_count(&clone->universes); i++) {
-        alea_vec_init(&clone->universes.data[i].cell_indices);
-        alea_vec_init(&clone->universes.data[i].point_bvh_nodes);
-        clone->universes.data[i].point_bvh_indices = NULL;
-        clone->universes.data[i].recovery_planes = NULL;
-        clone->universes.data[i].recovery_surfaces = NULL;
-        clone->universes.data[i].recovery_surface_count = 0;
-        clone->universes.data[i].recovery_surfaces_attempted = false;
-        clone->universes.data[i].recovery_child_cells = NULL;
-        clone->universes.data[i].recovery_child_count = 0;
-        clone->universes.data[i].recovery_children_ready = false;
-        clone->universes.data[i].point_bvh_built = false;
-        clone->universes.data[i].point_bvh_disabled = false;
+    /* Recovery lists can be published by concurrent ray readers. Copy
+     * only universe metadata; a clone rebuilds its own query caches. */
+    if (alea_vec_reserve(&clone->universes, sys->universes.count, alea_universe_t))
+        goto clone_error;
+    for (size_t i = 0; i < sys->universes.count; i++) {
+        clone->universes.data[i] = (alea_universe_t){
+            .universe_id = sys->universes.data[i].universe_id,
+            .bbox = sys->universes.data[i].bbox
+        };
     }
+    clone->universes.count = sys->universes.count;
 
     if (sys->mixtures.count) {
         clone->mixtures.data = alea_calloc(sys->mixtures.count, sizeof(alea_mixture_t));
@@ -601,14 +598,47 @@ int alea_surface_cell_references(const alea_system_t* sys,
  * GEOMETRY QUERIES
  * ============================================================================ */
 
-int alea_find_cell(alea_system_t* sys, double x, double y, double z) {
+static int selected_point_owner(alea_system_t* sys, double x, double y, double z,
+                                int* cell_id, int* material, int* index) {
     if (!sys) return -1;
-
-    alea_cell_hit_t hit;
-    if (alea_find_deepest_cell_hit_at_point(sys, x, y, z, &hit) != 0) {
-        return -1;
+    const interval_index_t* regional = alea_system_selected_index(sys);
+    if (!regional && alea_system_query_cache_ready(sys, ALEA_CACHE_HIER_SPATIAL) &&
+        !atomic_load_explicit(&sys->point_promotion_attempted, memory_order_relaxed)) {
+        uint64_t count = atomic_fetch_add_explicit(&sys->point_lookup_count, 1, memory_order_relaxed) + 1;
+        /* One sample per 16 calls. 7,812,500 sampled ns imply 125 ms of
+         * lookup work. Only one caller builds. Other readers keep walking. */
+        if (count > 64 && atomic_load_explicit(&sys->point_sample_ns, memory_order_relaxed) >= 7812500) {
+            int expected = 0;
+            if (atomic_compare_exchange_strong(&sys->point_promotion_attempted, &expected, 1)) {
+                if (alea_prepare_automatic_points(sys) < 0) {
+                    if (alea_interrupted()) return -1;
+                    alea_clear_error_detail();
+                }
+                regional = alea_system_selected_index(sys);
+            }
+        } else if ((count % 16) == 0) {
+            double start = alea_monotonic_seconds();
+            int rc = alea_hierarchy_point_owner(sys, x, y, z, cell_id, material, index);
+            double elapsed = alea_monotonic_seconds() - start;
+            if (elapsed > 0)
+                atomic_fetch_add_explicit(&sys->point_sample_ns,
+                    (uint64_t)(fmin(elapsed, 1.0) * 1e9), memory_order_relaxed);
+            return rc;
+        }
     }
-    return hit.cell_index;
+    /* Packed bounds cover finite float coordinates. Larger double inputs
+     * retain the hierarchy's ordered linear-scan fallback. */
+    if (regional) {
+        if (fabs(x) <= FLT_MAX && fabs(y) <= FLT_MAX && fabs(z) <= FLT_MAX)
+            return alea_regional_point_owner(regional, x, y, z, cell_id, material, index);
+        atomic_fetch_add(&sys->selected_fallbacks, 1);
+    }
+    return alea_hierarchy_point_owner(sys, x, y, z, cell_id, material, index);
+}
+
+int alea_find_cell(alea_system_t* sys, double x, double y, double z) {
+    int index;
+    return selected_point_owner(sys, x, y, z, NULL, NULL, &index) ? -1 : index;
 }
 
 int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
@@ -763,12 +793,8 @@ bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
 
 int alea_material_at(alea_system_t* sys, double x, double y, double z) {
     if (!sys) return -1;
-
-    alea_cell_hit_t hit;
-    if (alea_find_deepest_cell_hit_at_point(sys, x, y, z, &hit) != 0) {
-        return 0;  /* void */
-    }
-    return hit.material_id;
+    int material;
+    return selected_point_owner(sys, x, y, z, NULL, &material, NULL) ? 0 : material;
 }
 
 
@@ -3932,13 +3958,17 @@ int alea_universe_find(const alea_system_t* sys, int universe_id) {
 
 int alea_find_cell_at(alea_system_t* sys, double x, double y, double z,
                            int* out_cell_id, int* out_material) {
-    if (!sys) return -1;
+    return selected_point_owner(sys, x, y, z, out_cell_id, out_material, NULL);
+}
 
+int alea_hierarchy_point_owner(alea_system_t* sys, double x, double y, double z,
+                              int* out_cell_id, int* out_material, int* index) {
     alea_cell_hit_t hit;
     if (alea_find_deepest_cell_hit_at_point(sys, x, y, z, &hit) != 0) {
         return -1;
     }
 
+    if (index) *index = hit.cell_index;
     if (out_cell_id) *out_cell_id = hit.cell_id;
     if (out_material) *out_material = hit.material_id;
     return 0;

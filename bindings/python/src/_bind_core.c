@@ -120,9 +120,8 @@ static PyObject* PyAleaSystem_find_cell(PyAleaSystemObject* self, PyObject* args
     }
     if (ensure_query_acceleration(self) < 0) return NULL;
 
-    /* Deepest hit along the first containing (DFS) chain: identical answer
-     * to alea_find_cell, but the hit carries resolution_flags (undefined
-     * fill regions resolve to their container, flagged). */
+    /* Follow the first chain in the all-hits traversal. Its overlap ordering
+     * and resolution flags are part of the Python find_cell result. */
     alea_cell_hit_t hits[32];
     int n = alea_find_all_cells(self->sys, x, y, z, hits, 32);
     if (n <= 0) {
@@ -162,9 +161,12 @@ static PyObject* PyAleaSystem_material_at(PyAleaSystemObject* self, PyObject* ar
         PyErr_SetString(PyExc_RuntimeError, "System not initialized");
         return NULL;
     }
-    if (ensure_query_acceleration(self) < 0) return NULL;
+    if (ensure_point_lookup(self) < 0) return NULL;
 
-    alea_material_id_t mat = alea_material_at(self->sys, x, y, z);
+    alea_material_id_t mat;
+    Py_BEGIN_ALLOW_THREADS
+    mat = alea_material_at(self->sys, x, y, z);
+    Py_END_ALLOW_THREADS
     if (mat == ALEA_MATERIAL_NONE) {
         Py_RETURN_NONE;
     }
@@ -481,6 +483,11 @@ static PyObject* PyAleaSystem_build_spatial_index(PyAleaSystemObject* self, PyOb
 
 static PyObject* PyAleaSystem_prepare_query_acceleration(PyAleaSystemObject* self, PyObject* Py_UNUSED(ignored)) {
     if (ensure_query_acceleration(self) < 0) return NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject* PyAleaSystem_prepare_point_acceleration(PyAleaSystemObject* self, PyObject* Py_UNUSED(ignored)) {
+    if (prepare_acceleration(self, alea_prepare_point_acceleration) < 0) return NULL;
     Py_RETURN_NONE;
 }
 

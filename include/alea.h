@@ -12,7 +12,7 @@
  * Basic usage:
  *   // Programmatic geometry
  *   alea_system_t* sys = alea_create();
- *   alea_build_universe_index(sys);
+ *   alea_prepare_point_lookup(sys);
  *   int cell_id, material_id;
  *   alea_find_cell_at(sys, 0.0, 0.0, 0.0, &cell_id, &material_id);
  *   alea_destroy(sys);
@@ -197,11 +197,40 @@ int alea_build_universe_index(alea_system_t* sys);
  */
 int alea_prepare_query_acceleration(alea_system_t* sys);
 
+/** Prepare caches for selected-owner point lookups. Reuse a prepared regional
+ * index, otherwise prepare the spatial hierarchy. Sustained scalar lookups
+ * can then build an adaptive index automatically. Returns zero on success. */
+int alea_prepare_point_lookup(alea_system_t* sys);
+
+/** Prepare the world point index and let subsequent point queries add child
+ * bounds on demand. Repeated preparation reuses it. Edits discard it.
+ * With no bounded world domain, ordinary point lookup remains available.
+ * Returns 0 on success and -1 on error. */
+int alea_prepare_point_acceleration(alea_system_t* sys);
+
 /** Prepare experimental CPU containment expressions for bounded cell regions.
  * Geometry edits discard these programs. Call again to prepare the edited model.
  * Returns zero on success (including when no expressions simplify), -1 on error.
  * The editable CSG and signed evaluation always use the full expression. */
 int alea_prepare_regional_queries(alea_system_t* sys);
+
+/** Prepare a model-owned point index for alea_find_cell_at() and alea_find_cell().
+ * A NULL domain derives a working box from bounded world cells. With no usable
+ * box, lookups use the hierarchy. Repeated calls reuse the index. To change
+ * domains, clear it first. Geometry and material edits discard it.
+ * Returns zero on success and -1 on failure. */
+int alea_prepare_selected_queries(alea_system_t* sys, const alea_bbox_t* domain);
+/** Release selected point indexes and reset automatic preparation. Exclusive access required. */
+void alea_clear_selected_queries(alea_system_t* sys);
+typedef struct {
+    alea_bbox_t domain;
+    size_t bytes;             /**< Retained index storage, excluding shared hierarchy. */
+    double build_seconds;     /**< Initial domain selection and construction after prerequisite caches. */
+    uint64_t fallback_visits; /**< Local scans, local hierarchy lookups and full hierarchy retries. */
+} alea_selected_query_stats_t;
+
+/** Return 1 if active, 0 otherwise. An optional output is zeroed when inactive. */
+int alea_selected_query_stats(const alea_system_t* sys, alea_selected_query_stats_t* stats);
 
 typedef struct {
     size_t tiles;              /**< Completed tiles with candidate lists. */
@@ -289,6 +318,7 @@ int alea_surface_cell_references(const alea_system_t* sys,
  * Prefer `alea_find_cell_at()` for single-point queries, or
  * `alea_find_all_cells()` when hierarchy detail is needed. */
 int alea_find_cell(alea_system_t* sys, double x, double y, double z);
+
 int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
                             alea_cell_hit_t* hits, size_t max_hits);
 /** Complete diagnostic ownership query with concrete occurrence ancestry.
@@ -1766,8 +1796,8 @@ int alea_universe_find(const alea_system_t* sys, int universe_id);
  * In each universe, select the first containing cell in model definition order,
  * then descend through its fill or lattice. An undefined fill resolves to its
  * container. Shared boundaries use the same ordering as volumetric overlaps.
- * Call alea_prepare_query_acceleration() after geometry edits to prepare the
- * indexes. Spatial acceleration preserves this selection order.
+ * Call alea_prepare_point_lookup() after geometry edits for point queries,
+ * or alea_prepare_query_acceleration() for the full query caches.
  */
 int alea_find_cell_at(alea_system_t* sys, double x, double y, double z,
                            int* out_cell_id, int* out_material);

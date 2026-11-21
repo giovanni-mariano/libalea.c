@@ -24,6 +24,32 @@ options.tally_plan = plan;
  * alea_tally_results_view(result.tallies, 0, &view). */
 ```
 
+## Tracking across a narrow gap or overlap
+
+Fixed-source and adjoint transport use sampled STRICT validation by default.
+To try recovery, set `options.navigation_validation = ALEA_NAV_VALIDATE_TRANSPORT`.
+In Python and Lua the fixed-source configuration field is
+`navigation_validation`, with the value `"transport"`.
+
+At a detected gap, undefined fill or overlap, this mode checks the original
+surface crossings and cell occurrences on both sides. The maximum interval
+width along the flight is `1e-10` cm. Both ends must transmit, the incident
+and outgoing cells must be identified, and an overlap must involve exactly
+those two occurrences. A definite intervening material or void cell keeps
+its own track. If the ownership or boundary evidence is inconclusive,
+the ordinary navigation diagnostic applies. A history starting in a defect
+has no incident material to assign.
+
+Within a recovered interval, track length, time, optical depth and collisions
+use the incident material or void. Scattered and emitted particles must
+verify their new direction independently. Successful runs expose
+`result.recovery` (Python: `result["recovery"]`), with the number of recovered
+gaps (including undefined fills), overlaps, total unweighted distance in cm
+and the last entry and exit surface IDs. The navigator emits both physical
+boundary events. Recovery counts describe crossings encountered by the
+selected navigator. Use interval coverage to inspect a whole flight for
+defects.
+
 The current scores are weighted track length in centimetres, weighted
 collision count, weighted sampled-reaction count, a track-length
 reaction-rate estimator, photon local deposition, and neutron heating. The neutron heating score adds

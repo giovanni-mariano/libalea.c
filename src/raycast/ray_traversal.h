@@ -7,7 +7,28 @@
 #include "core/alea_system.h"
 #include "core/alea_transform.h"
 
+/* Express O + t D in a placement's local frame, preserving the world ray's t. */
+void alea_ray_transform_inverse(const alea_matrix_t* frame, const alea_ray_t* world,
+                                alea_ray_t* local);
+
+/* Select an incident cell card at exactly t using the scalar walker's card order. */
+int alea_ray_cell_surface_at(alea_system_t* sys, const alea_ray_t* local,
+                             uint32_t cell, double t, alea_raycast_result_t* result,
+                             uint32_t* primitive);
+
 #define MAX_FILL_RAYCAST_DEPTH 32
+
+/* Optional candidate source for root recovery in a scalar segment walk.
+ * Return a verified root cell index or -1 to use the hierarchy. */
+typedef struct {
+    int (*find)(void* context, double x, double y, double z, int crossed_surface);
+    void* context;
+} alea_ray_root_lookup_t;
+
+int alea_raycast_hier_segments_with_root_lookup(
+    alea_system_t* sys, double ox, double oy, double oz,
+    double dx, double dy, double dz, double t_max, alea_raycast_result_t* result,
+    const alea_ray_root_lookup_t* lookup);
 
 void alea_raycast_tree_primitives(alea_system_t* sys,
                                     const alea_ray_t* ray,

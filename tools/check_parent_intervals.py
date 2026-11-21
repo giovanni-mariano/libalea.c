@@ -5,6 +5,7 @@
 import argparse
 import json
 import math
+import os
 import random
 from pathlib import Path
 import subprocess
@@ -199,6 +200,148 @@ def check_adjacent_roots(adapter, root):
     assert ref["rays"] == regional["rays"]
 
 
+def check_fill_world_distance(adapter, root):
+    # The rounded xy rotation leaves z and dz unchanged. The child's
+    # z=10 plane must coincide with the parent's in either direction.
+    model = root / "coincident-fill.i"
+    deck = """Coincident planes across a rounded fill rotation
+1 0 -1 fill=1 (58)
+2 0 1
+101 0 -2 u=1
+102 0 2 -3 u=1
+103 1 -1 3 u=1
+
+1 pz 10
+2 pz 0
+3 pz 10
+
+tr58 0 0 {shift} 0.86603 0.50000 0 0.50000 -0.86603 0 0 0 1
+m1 1001 1
+"""
+    work = root / "coincident-fill.workload"
+    work.write_text("p 0 0 1\nr 0 0 -114 4 0 3 500\nr 400 0 186 -4 0 -3 500\n")
+    cmd = [adapter.resolve(), "fresh", model, work, root / "unused"]
+    # Moving the child down by 2^-43 cm opens a genuine material layer.
+    for shift in (0, -2.0**-43):
+        model.write_text(deck.format(shift=shift))
+        # An exact tie follows the incident cell's card, including on the
+        # entry of the following segment. Check this against the public walk.
+        env = dict(os.environ, ALEA_INTERVAL_COMPARE_PUBLIC="surfaces") if shift == 0 else None
+        full = json.loads(subprocess.check_output(cmd, env=env))["rays"]
+        indexed = json.loads(subprocess.check_output(cmd + ["--point-grid", *(["-600", "600"] * 3)]))["rays"]
+        assert full == indexed and len(full) == 2
+        for row, origin, dz in zip(full, [-114, 186], [0.6, -0.6]):
+            cells = [101, 102, 103, 2] if shift else [101, 102, 2]
+            surfaces = [2, 3, 1] if shift else [2, 3 if dz > 0 else 1]
+            heights = [shift, 10 + shift, 10] if shift else [0, 10]
+            if dz < 0:
+                cells.reverse()
+                surfaces.reverse()
+                heights.reverse()
+            ends = [0, *((z - origin)/dz for z in heights), 500]
+            assert [s["label"]["cell"] for s in row] == cells
+            assert [s["label"]["material"] for s in row] == [int(c == 103) for c in cells]
+            assert [s["enter"] for s in row] == ends[:-1] and [s["exit"] for s in row] == ends[1:]
+            assert [s["surface_in"] for s in row] == [-1, *surfaces]
+            assert [s["surface_out"] for s in row] == [*surfaces, -1]
+
+
+def check_close_quadric_gap(adapter, root):
+    # The two roots are ~1.19e-12 cm apart. In the first deck the half-space
+    # -3 makes the cut by surface 2 redundant; in the second it bounds cell 10.
+    deck = """Two nearly coincident quadrics
+10 1 -1 {first_cell}
+20 2 -1 -1
+
+1 gq 0.030153689607081 0.969846310392919 1 0.342020143325863 0 0
+     -206.814337848850040 -1172.902394277684600 -102.000808796413540
+     216968.840459326430000
+2 gq 0.030153689607081 0.969846310392919 1 0.342020143325863 0 0
+     -206.814337848838900 -1172.902394277686900 -102.000808796413590
+     216968.840459326510000
+3 px 5000
+
+m1 1001 1
+m2 1001 1
+"""
+    model = root / "close-quadrics.i"
+    work = root / "close-quadrics.workload"
+    work.write_text("p 0 0 0\nr -262.4563849952908 1157.0080930303711 -403.9923819206924 "
+                    "0.8565508818580871 -0.45145463514230855 0.7019354298985057 1000\n"
+                    "r 453.77634785815815 779.5096934187713 182.9536383230443 "
+                    "-0.8565508818580871 0.45145463514230855 -0.7019354298985057 1000\n")
+    cmd = [adapter.resolve(), "fresh", model, work, root / "unused"]
+    for expression, expected in [("1 (2 : -3)", [10, 20]), ("2", [10, -1, 20])]:
+        model.write_text(deck.format(first_cell=expression))
+        for options in [[], ["--point-grid", *(["-2000", "2000"] * 3)]]:
+            forward, reverse = json.loads(subprocess.check_output(cmd + options))["rays"]
+            assert [s["label"]["cell"] for s in forward] == expected
+            assert [s["label"]["cell"] for s in reverse] == expected[::-1]
+            assert forward[-1]["surface_in"] == reverse[0]["surface_out"] == 1
+            assert abs(forward[-1]["enter"] - 576.1743444620345) < 3e-12
+            for row, surfaces in ((forward, (2, 1)), (reverse, (1, 2))):
+                assert row[0]["enter"] == 0 and row[-1]["exit"] == 1000
+                assert all(a["exit"] == b["enter"] for a, b in zip(row, row[1:]))
+                if len(expected) == 3:
+                    gap = row[1]
+                    assert (gap["surface_in"], gap["surface_out"]) == surfaces
+                    assert abs((gap["exit"] - gap["enter"]) - 1.18624e-12) <= math.ulp(gap["enter"])
+
+
+def check_substep_fill(adapter, root):
+    # Rounding the plane numerator before dividing by dx puts these cuts
+    # one step apart. Both exact roots round to the same world distance.
+    deck = root / "substep.i"
+    deck.write_text("""Parallel planes in a fill
+1 0 -1 fill=7
+11 0 -2 u=7
+12 0 3 u=7
+
+1 so 500000000
+2 px 5.960464477539063e-9
+3 px 8.940696716308593e-9
+
+""")
+    work = root / "substep.workload"
+    work.write_text("p 0 0 0\nr -102400000.00000001 0 0 3 4 0 200000000\n")
+    cmd = [adapter.resolve(), "fresh", deck, work, root / "unused"]
+    for options in ([], ["--point-grid", *(["-500000000", "500000000"] * 3)]):
+        ray, = json.loads(subprocess.check_output(cmd + options))["rays"]
+        assert [s["label"]["cell"] for s in ray] == [11, 12]
+        assert ray[0]["exit"] == ray[1]["enter"] == float.fromhex("0x1.4585555555557p+27")
+
+
+def check_overlap_scoring(adapter, root):
+    model = root / "overlap-score.i"
+    deck = """Earlier fill placement inside a later material cell
+900 0 {region} fill=7
+100 2 -2 -3
+15 1 -1 -2 -3 u=7
+
+1 px 1
+2 px 2
+3 so 20
+4 px 3
+5 px 4
+
+m1 1001 1
+m2 1001 1
+"""
+    work = root / "overlap-score.workload"
+    work.write_text("p 1.5 0 0\nr 0 0 0 1 0 0 5\nr 0 0 0 -1 0 0 1\n")
+    cmd = [adapter.resolve(), "fresh", model, work, root / "unused"]
+    env = dict(os.environ, ALEA_INTERVAL_COMPARE_PUBLIC="overlaps")
+    # A second occurrence of the fill is undefined throughout [3,4].
+    # It keeps the entire ray in the failure count despite the overlap at [1,2].
+    for region, failures in [("1 -2", 0), ("(1 -2):(4 -5)", 1)]:
+        model.write_text(deck.format(region=region))
+        for options in ([], ["--point-grid", *(["-8", "8"] * 3)]):
+            run = subprocess.run(cmd + options, env=env, capture_output=True)
+            assert run.returncode == failures, run.stderr
+            score = json.loads(run.stdout)["geometry_comparison"]
+            assert score == dict(rays=2, matched=1, overlap_only=1-failures, remaining=failures), score
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("adapter", type=Path)
@@ -206,6 +349,10 @@ def main():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         check_adjacent_roots(args.adapter, root)
+        check_fill_world_distance(args.adapter, root)
+        check_close_quadric_gap(args.adapter, root)
+        check_substep_fill(args.adapter, root)
+        check_overlap_scoring(args.adapter, root)
         check_spatial_index(args.adapter, root)
         check_lattices_and_coincident_cards(args.adapter, root)
         check_radial_surfaces(args.adapter, root)

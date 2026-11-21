@@ -4,6 +4,7 @@
 
 #include "alea_test.h"
 #include "alea_adjoint.h"
+#include "transport_recovery_fixture.h"
 #include "rng/alea_rng.h"
 #include <math.h>
 #include <stdio.h>
@@ -61,6 +62,29 @@ TEST(adjoint_vacuum_and_absorber_match_path_integral_for_both_species) {
         ASSERT(result.standard_error > 0.0);
         alea_destroy(sys);
     }
+}
+
+TEST(adjoint_scores_recovered_track_in_the_incident_cell) {
+    double total = 0.5, transfer = 0;
+    alea_mg_material_t cells[] = {{0}, {&total, &transfer}, {0}};
+    double source[] = {0, 2, 1};
+    size_t group = 0;
+    alea_adjoint_problem_t problem = {.particle = ALEA_NUC_PARTICLE_NEUTRON, .n_groups = 1,
+        .cell_count = 3, .cell_materials = cells, .physical_source = source,
+        .detector_sampler = center_detector, .detector_context = &group};
+    alea_adjoint_options_t options = {.histories = 64, .seed = 42,
+        .max_events_per_history = 100, .max_segment_distance = 0.25};
+    alea_adjoint_result_t result[2];
+    for (int gap = 0; gap <= 1; ++gap) {
+        alea_system_t* sys = recovery_absorber(gap);
+        ASSERT_NOT_NULL(sys);
+        options.navigation_validation = gap ? ALEA_NAV_VALIDATE_TRANSPORT : ALEA_NAV_VALIDATE_STRICT;
+        ASSERT_EQ(alea_adjoint_run(sys, &problem, &options, result + gap, NULL), ALEA_OK);
+        alea_destroy(sys);
+    }
+    ASSERT(result[1].recovery.gaps > 0);
+    ASSERT_NEAR(result[1].mean, result[0].mean, 1e-13);
+    ASSERT_NEAR(result[1].standard_error, result[0].standard_error, 1e-13);
 }
 
 TEST(adjoint_transposes_asymmetric_group_transfer_and_replays) {

@@ -48,6 +48,40 @@ def main():
             print(result.stdout.strip())
         model = tmp / "model.i"
         model.write_text("Sphere\n1 1 -1 -1\n2 0 1\n\n1 so 5\n\n")
+        inspector_obj = str(tmp / "inspector.o")
+        run(compiler + ["-std=c11", "-O1", f"-I{root / 'include'}", *flags,
+            "-c", str(root / "tools/render_inspector.c"), "-o", inspector_obj])
+        build_test = tmp / "render-build"
+        run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-DALEA_USE_SDL",
+            f"-I{root / 'include'}", str(root / "tests/tools/test_render_view_build.c"),
+            inspector_obj, "-o", str(build_test)] + libraries + flags)
+        for scenario in ("ready", "fail", "renderfail", "close", "cpu", "xray"):
+            output = tmp / f"build-{scenario}.bmp"
+            options = {"cpu": ["--backend", "cpu"], "xray": ["--mode", "xray"]}.get(scenario, [])
+            run([str(build_test), str(model), "--interactive", "--width", "64",
+                 "--height", "64", "-o", str(output), *options],
+                env=dict(os.environ, SDL_VIDEODRIVER="dummy", ALEA_TEST_BUILD=scenario))
+            if scenario != "close":
+                assert output.read_bytes()[:2] == b"BM"
+                if scenario in ("fail", "renderfail"):
+                    assert output.read_bytes() == (tmp / "build-ready.bmp").read_bytes()
+        run([str(build_test), str(model), "--interactive", "--backend", "regional",
+             "--width", "65", "--height", "65", "--eye", "20,0,0",
+             "--target", "0,0,0", "--clip-nx=0"],
+            env=dict(os.environ, SDL_VIDEODRIVER="dummy", ALEA_TEST_BUILD="pick"))
+        inspector_test = tmp / "inspector-test"
+        run(compiler + ["-std=c11", "-O1", "-DALEA_USE_SDL", f"-I{root / 'include'}",
+            str(root / "tests/tools/test_render_inspector.c"), "-o", str(inspector_test)]
+            + libraries + flags)
+        inspector_model = tmp / "inspector.i"
+        inspector_model.write_text("Materials\n1 1 -1 -1\n2 2 -1 -2\n3 0 1 2\n\n"
+            "1 so 5\n2 s 0 7 1 1.6\n\nm1 1001 1\nm2 8016 1\n")
+        result = run([str(inspector_test), str(inspector_model), "--interactive", "--backend", "regional",
+            "--width", "65", "--height", "65", "--eye", "20,0,0", "--target", "0,0,0",
+            "--clip-nx=0"], env=dict(os.environ, SDL_VIDEODRIVER="dummy"))
+        print(result.stdout.strip())
+        print("Full-resolution cut-face pick from preview and off-center orbit: PASS")
+        print("Regional viewer publication, fallback, save, quit, CPU override and X-ray: PASS")
         nested_model = tmp / "nested.i"
         nested_model.write_text(
             "Nested elliptical torus\n1 0 -1 fill=1\n2 1 -1 -2 u=1\n"
@@ -98,7 +132,7 @@ int main(int argc, char** argv) {{
             extra = (["-DALEA_VIEW_METAL", str(root / "bin/compute/metal/libalea_compute.a"),
                 "-framework", "Foundation", "-framework", "Metal"] if name.startswith("metal") else [])
             run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-DALEA_USE_SDL",
-                f"-I{root / 'include'}", str(wrapper), "-o", str(exe)] + extra + libraries + flags)
+                f"-I{root / 'include'}", str(wrapper), "-o", str(exe)] + ([] if is_slice else [inspector_obj]) + extra + libraries + flags)
             images = {}
             actions = [("initial", "sq"), ("zoom", "+sq"), ("reset", "+rsq")]
             if name.startswith("metal_slice"):

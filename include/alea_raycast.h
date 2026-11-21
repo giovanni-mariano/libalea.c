@@ -38,6 +38,17 @@ typedef struct { double origin[3], direction[3], distance; } alea_segment_ray_t;
 alea_prepared_queries_t* alea_prepared_queries_create(alea_system_t* sys, const alea_bbox_t* domain);
 void alea_prepared_queries_destroy(alea_prepared_queries_t* prepared);
 
+/** Prepare a model-owned index for repeated finite geometry-only segment batches.
+ * NULL derives a working box from bounded world cells. If none exist, the
+ * hierarchy remains active. Repeated calls reuse the same domain. Preparation,
+ * attaching or clearing an index, and model edits require exclusive model access.
+ * Concurrent batch readers each use independent traversal scratch. */
+int alea_prepare_ray_acceleration(alea_system_t* sys, const alea_bbox_t* domain);
+/** Share an existing prepared handle with ordinary segment batches without
+ * rebuilding. The model retains a reference until an edit, replacement, clear
+ * (pass NULL), or model destruction. The caller still releases its own handle. */
+int alea_set_ray_batch_accelerator(alea_system_t* sys, alea_prepared_queries_t* prepared);
+
 /** Return the deepest ordered owner for each finite point, in input order.
  * Each status is zero for an owner, -1 if no cell was found. The function
  * returns zero for a completed batch and -1 on failure. */
@@ -73,7 +84,9 @@ typedef struct alea_ray_navigator alea_ray_navigator_t;
 typedef enum {
     ALEA_NAV_VALIDATE_STRICT = 0,
     ALEA_NAV_VALIDATE_FAST = 1,
-    ALEA_NAV_VALIDATE_INTERVAL = 2
+    ALEA_NAV_VALIDATE_INTERVAL = 2,
+    /** STRICT plus recovery of verified short transmissive gaps and overlaps. */
+    ALEA_NAV_VALIDATE_TRANSPORT = 3
 } alea_nav_validation_mode_t;
 
 #define ALEA_NAV_EVENT_NORMAL (1u << 0)
@@ -117,6 +130,19 @@ typedef struct {
                                      by a boundary action; otherwise zero */
 } alea_nav_event_t;
 
+/** Maximum width along the flight, in cm, for TRANSPORT recovery. */
+#define ALEA_NAV_TRANSPORT_RECOVERY_CM 1e-10
+
+typedef struct {
+    uint64_t gaps, overlaps;
+    double distance_cm;          /**< Actual distance travelled under recovery. */
+    int last_enter_surface_id, last_exit_surface_id;
+} alea_nav_recovery_stats_t;
+
+/** Cumulative across restarts. An independent clone starts its counters at zero. */
+int alea_ray_navigator_recovery_stats(const alea_ray_navigator_t* navigator,
+                                      alea_nav_recovery_stats_t* out);
+
 /** Create a reusable navigator; restart() locates its first particle.
  * Returns NULL if sys is NULL or allocation fails. */
 alea_ray_navigator_t* alea_ray_navigator_create(alea_system_t* sys);
@@ -126,8 +152,11 @@ void alea_ray_navigator_destroy(alea_ray_navigator_t* navigator);
  * Switching to STRICT verifies the current interval before returning. */
 int alea_ray_navigator_set_validation_mode(
     alea_ray_navigator_t* navigator, alea_nav_validation_mode_t mode);
-/** Maximum raw geometric breakpoints checked per finite INTERVAL advance.
- * Defaults to 8192; exceeding it fails the advance. */
+/** Maximum raw geometric breakpoints per coverage sweep (default 8192).
+ * In INTERVAL mode, exceeding the budget during flight validation fails the
+ * advance. In every mode, recovery may use a separate sweep to confirm that
+ * the current cell owns the span to its next boundary. An inconclusive sweep
+ * retains the original recovery limit. */
 int alea_ray_navigator_set_interval_budget(
     alea_ray_navigator_t* navigator, size_t max_breakpoints);
 /** Relative tolerance used only to order competing forward crossings from
@@ -447,10 +476,15 @@ int alea_generate_cauchy_crofton_rays(double cx, double cy, double cz,
 /**
  * Trace packed XYZ origin/direction pairs into compact CSR arrays.
  *
+ * Finite geometry-only batches can prepare hierarchy recovery lists during
+ * traversal. Short batches start with ordinary hierarchy preparation.
  * The output ray order matches input order. ray_offsets has ray_count + 1
  * entries; a ray's segments occupy [offsets[i], offsets[i + 1]). Directions
  * are normalized using the same rules as the single-ray API. The function
- * prepares required hierarchical caches before parallel tracing.
+ * prepares required hierarchical caches before parallel tracing. After
+ * alea_prepare_ray_acceleration() or alea_set_ray_batch_accelerator(), finite
+ * geometry-only requests use regional selected ownership. Requests for surfaces,
+ * projected owners, paths or unbounded distances use the hierarchy.
  */
 int alea_raycast_hier_batch(alea_system_t* sys,
                             const double* origins_xyz,
@@ -768,6 +802,27 @@ int alea_ray_classify_intervals(alea_system_t* sys,
                                 double t_max,
                                 alea_ray_interval_finding_t* out,
                                 size_t max_out);
+
+/** Ordered physical boundaries of an undefined interval inside one fill.
+ * Rounded world-ray distances can coincide. width is evaluated separately
+ * from the plane offsets in the common placement frame. */
+typedef struct {
+    int parent_cell_id, fill_universe;
+    int enter_surface_id, exit_surface_id;
+    double t_enter, t_exit, width;
+} alea_ray_substep_fill_t;
+
+/** Inspect a boundary near world distance t on a normalized ray. Returns 1
+ * for a verified ordinary fill gap between parallel planes with equal or
+ * adjacent rounded distances, 0 if inconclusive, and -1 on error.
+ * The finding belongs to the indicated parent occurrence along this ray. */
+int alea_ray_diagnose_substep_fill(alea_system_t* sys, const double origin[3],
+    const double direction[3], double t, alea_ray_substep_fill_t* out);
+
+/** Copy the verified fill finding at the navigator's current unresolved
+ * boundary. Returns 1 for a finding, 0 if none, and -1 on invalid input. */
+int alea_ray_navigator_substep_fill(const alea_ray_navigator_t* navigator,
+                                    alea_ray_substep_fill_t* out);
 
 /**
  * @brief Calculate total path length through material

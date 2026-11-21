@@ -15,6 +15,7 @@
 #include "util/compat.h"
 #include "util/load_profile.h"
 #include "raycast/bvh.h"
+#include "alea_raycast.h"
 #include "raycast/recovery_planes.h"
 #include "primitives/primitive_desc.h"
 #include "primitives/bbox.h"
@@ -90,6 +91,10 @@ alea_system_t* alea_system_create(void) {
     sys->system_id = atomic_fetch_add(&g_next_system_id, 1);
     atomic_init(&sys->geometry_generation, 1);
     atomic_init(&sys->material_generation, 1);
+    atomic_init(&sys->selected_fallbacks, 0);
+    atomic_init(&sys->point_lookup_count, 0);
+    atomic_init(&sys->point_sample_ns, 0);
+    atomic_init(&sys->point_promotion_attempted, 0);
     atomic_init(&sys->query_cache_state, 0);
     atomic_flag_clear(&sys->query_cache_build_lock);
     /* cell_refs is zero-initialized by calloc (equivalent to ALEA_VEC_INIT) */
@@ -139,8 +144,16 @@ uint64_t alea_system_material_generation(const alea_system_t* sys) {
     return sys ? atomic_load(&sys->material_generation) : 0;
 }
 
+static void clear_ray_batch_index(alea_system_t* sys) {
+    if (sys->ray_batch_index) alea_set_ray_batch_accelerator(sys, NULL);
+}
+
 void alea_system_materials_changed(alea_system_t* sys) {
-    if (sys) atomic_fetch_add(&sys->material_generation, 1);
+    if (sys) {
+        clear_ray_batch_index(sys);
+        alea_clear_selected_queries(sys);
+        atomic_fetch_add(&sys->material_generation, 1);
+    }
 }
 
 int alea_system_reserve_cell_metadata(alea_system_t* sys, size_t count) {
@@ -161,6 +174,7 @@ static void alea_free_cell_dynamic_fields(alea_system_t* sys) {
         free(sys->cells.data[i].surface_indices);
         sys->cells.data[i].surface_indices = NULL;
         sys->cells.data[i].surface_index_count = 0;
+        sys->cells.data[i].surface_index_exact = false;
         if (!sys->neighbor_pool)
             free(sys->cells.data[i].neighbors);
         sys->cells.data[i].neighbors = NULL;
@@ -208,6 +222,7 @@ static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
         sys->universes.data[i].recovery_surfaces = NULL;
         sys->universes.data[i].recovery_surface_count = 0;
         sys->universes.data[i].recovery_surfaces_attempted = false;
+        sys->universes.data[i].recovery_surfaces_exact = false;
         free(sys->universes.data[i].recovery_child_cells);
         sys->universes.data[i].recovery_child_cells = NULL;
         sys->universes.data[i].recovery_child_count = 0;
@@ -227,6 +242,13 @@ static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
 
 static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
                                           bool free_universe_vector) {
+    if (flags & ALEA_CACHE_FILL_MATRICES) {
+        free(sys->fill_matrices.slots);
+        free(sys->fill_matrices.matrices);
+        sys->fill_matrices = (alea_fill_matrix_cache_t){0};
+    }
+    if (flags & (ALEA_CACHE_SELECTED_POINTS | ALEA_CACHE_AUTO_POINTS)) alea_clear_selected_queries(sys);
+    if (flags & ALEA_CACHE_BATCH_RAYS) clear_ray_batch_index(sys);
     if (flags & ALEA_CACHE_REGIONAL) {
         alea_regional_free(sys->regional_cache);
         sys->regional_cache = NULL;
@@ -257,6 +279,7 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
             sys->universes.data[i].recovery_surfaces = NULL;
             sys->universes.data[i].recovery_surface_count = 0;
             sys->universes.data[i].recovery_surfaces_attempted = false;
+            sys->universes.data[i].recovery_surfaces_exact = false;
         }
     }
     if (flags & ALEA_CACHE_CELL_SURFACES) {
@@ -264,6 +287,7 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
             free(sys->cells.data[i].surface_indices);
             sys->cells.data[i].surface_indices = NULL;
             sys->cells.data[i].surface_index_count = 0;
+            sys->cells.data[i].surface_index_exact = false;
         }
         free(sys->prim_to_surface);
         sys->prim_to_surface = NULL;
@@ -306,12 +330,14 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
 
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
     if (!sys || flags == 0) return;
-    flags |= ALEA_CACHE_REGIONAL;
+    flags |= ALEA_CACHE_REGIONAL | ALEA_CACHE_SELECTED_POINTS | ALEA_CACHE_AUTO_POINTS | ALEA_CACHE_BATCH_RAYS;
 
     if (flags & (ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES))
         flags |= ALEA_CACHE_RECOVERY_SURFACES;
     if (flags & ALEA_CACHE_UNIVERSE)
         flags |= ALEA_CACHE_RECOVERY_CHILDREN;
+    if (flags & (ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_FILL_MATRICES))
+        flags |= ALEA_CACHE_FILL_MATRICES | ALEA_CACHE_HIER_SPATIAL;
     unsigned invalidated_flags = flags;
 
     unsigned prev_state = atomic_fetch_and(&sys->query_cache_state, ~flags);
@@ -327,6 +353,8 @@ void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
      * During bulk load, callers invalidate on every add; without this,
      * each add walks all prior cells/universes (O(N^2) load time). */
     flags &= prev_state;
+    /* A prepared hierarchy can have accumulated lookup time before promotion. */
+    if (prev_state & ALEA_CACHE_HIER_SPATIAL) flags |= ALEA_CACHE_AUTO_POINTS;
     if (flags == 0) return;
 
     alea_free_query_cache_storage(sys, flags, false);
@@ -402,10 +430,12 @@ static int prepare_recovery_surfaces(alea_system_t* sys) {
         uint32_t* cards = NULL;
         size_t count = 0, capacity = 0;
         bool complete = true;
+        bool exact = true;
         for (size_t c = 0; c < univ->cell_indices.count && complete; c++) {
             size_t ci = univ->cell_indices.data[c];
             if (ci >= sys->cells.count) { complete = false; break; }
             const alea_cell_entry_t* cell = &sys->cells.data[ci];
+            if (!cell->surface_index_exact) exact = false;
             if (!cell->surface_indices || !cell->surface_index_count) {
                 complete = false; break;
             }
@@ -439,6 +469,7 @@ static int prepare_recovery_surfaces(alea_system_t* sys) {
             if (!shrunk) { free(cards); continue; }
             univ->recovery_surfaces = shrunk;
             univ->recovery_surface_count = count;
+            univ->recovery_surfaces_exact = exact;
             used += count * sizeof(uint32_t);
             univ->recovery_planes = recovery_plane_build(sys, shrunk, count, budget-used);
             if (univ->recovery_planes) used += univ->recovery_planes->bytes;
@@ -512,6 +543,36 @@ static int prepare_recovery_children(alea_system_t* sys) {
     return 0;
 }
 
+static int prepare_ray_recovery_locked(alea_system_t* sys, unsigned flags) {
+    if ((flags & ALEA_CACHE_RECOVERY_CHILDREN) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_CHILDREN)) {
+        if (prepare_recovery_children(sys) != 0) return -1;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_RECOVERY_CHILDREN);
+    }
+
+    if ((flags & ALEA_CACHE_RECOVERY_SURFACES) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_SURFACES)) {
+        if (prepare_recovery_surfaces(sys) != 0) return -1;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_RECOVERY_SURFACES);
+    }
+    return 0;
+}
+
+/* Called after the mandatory point and cell-surface caches are ready.
+ * A batch worker must never wait on a builder that may need its executor. */
+int alea_system_try_prepare_ray_recovery(alea_system_t* sys) {
+    if (atomic_flag_test_and_set(&sys->query_cache_build_lock)) return 0;
+    int rc = 0;
+    if (alea_system_query_cache_ready(sys, ALEA_CACHE_HIER_SPATIAL) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_RAY_RECOVERY)) {
+        double start = alea_load_profile_start();
+        rc = prepare_ray_recovery_locked(sys, ALEA_CACHE_RAY_RECOVERY);
+        alea_load_profile_end("batch_ray_recovery", start);
+    }
+    atomic_flag_clear(&sys->query_cache_build_lock);
+    return rc;
+}
+
 int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
     if (!sys) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG,
@@ -527,7 +588,7 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
     if (flags & ALEA_CACHE_RECOVERY_SURFACES)
         flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
     if (flags & ALEA_CACHE_HIER_SPATIAL)
-        flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
+        flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES | ALEA_CACHE_FILL_MATRICES;
     if (flags & ALEA_CACHE_ADJACENCY)
         flags |= ALEA_CACHE_CELL_SURFACES;
 
@@ -564,6 +625,15 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_CELL_SURFACES);
     }
 
+    if ((flags & ALEA_CACHE_FILL_MATRICES) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_FILL_MATRICES)) {
+        if (alea_build_fill_matrix_cache(sys) != 0) {
+            if (alea_get_last_error() == ALEA_OK)
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE, "failed to prepare fill transforms");
+            goto fail;
+        }
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_FILL_MATRICES);
+    }
     if ((flags & ALEA_CACHE_HIER_SPATIAL) &&
         !alea_system_query_cache_ready(sys, ALEA_CACHE_HIER_SPATIAL)) {
         if (alea_hier_spatial_index_build(sys) != 0) {
@@ -605,17 +675,7 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_ADJACENCY);
     }
 
-    if ((flags & ALEA_CACHE_RECOVERY_CHILDREN) &&
-        !alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_CHILDREN)) {
-        if (prepare_recovery_children(sys) != 0) goto fail;
-        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_RECOVERY_CHILDREN);
-    }
-
-    if ((flags & ALEA_CACHE_RECOVERY_SURFACES) &&
-        !alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_SURFACES)) {
-        if (prepare_recovery_surfaces(sys) != 0) goto fail;
-        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_RECOVERY_SURFACES);
-    }
+    if (prepare_ray_recovery_locked(sys, flags)) goto fail;
     if ((flags & ALEA_CACHE_REGIONAL) &&
         !alea_system_query_cache_ready(sys, ALEA_CACHE_REGIONAL)) {
         if (alea_regional_build(sys) != 0) goto fail;
@@ -627,6 +687,11 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
 fail:
     atomic_flag_clear(&sys->query_cache_build_lock);
     return -1;
+}
+
+int alea_prepare_point_lookup(alea_system_t* sys) {
+    if (sys && alea_system_selected_index(sys)) return 0;
+    return alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL);
 }
 
 int alea_prepare_query_acceleration(alea_system_t* sys) {
@@ -1970,6 +2035,8 @@ int alea_build_universe_index(alea_system_t* sys) {
         return -1;
     }
 
+    clear_ray_batch_index(sys);
+    alea_clear_selected_queries(sys);
     atomic_fetch_and(&sys->query_cache_state,
                      ~(unsigned)(ALEA_CACHE_UNIVERSE | ALEA_CACHE_RECOVERY_SURFACES | ALEA_CACHE_RECOVERY_CHILDREN));
     alea_clear_universe_cache(sys, false);
@@ -2540,9 +2607,11 @@ static int collect_surfaces_recursive(alea_system_t* sys,
                                        alea_node_id_t node_id,
                                        uint32_t** surface_indices,
                                        size_t* count,
-                                       size_t* capacity) {
-    if (node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes))
+                                       size_t* capacity, bool* exact) {
+    if (node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes)) {
+        *exact = false;
         return 0;
+    }
 
     const alea_node_t* node = &sys->nodes.data[node_id];
     alea_operation_t op = ALEA_GET_OPERATION(node);
@@ -2564,6 +2633,11 @@ static int collect_surfaces_recursive(alea_system_t* sys,
                 surf_idx = sys->prim_to_surface[prim_id];
             }
         }
+
+        if (surf_idx >= sys->surfaces.count ||
+            sys->surfaces.data[surf_idx].mc_surface_id != mcnp_id ||
+            sys->surfaces.data[surf_idx].primitive_id != node->primitive.primitive_id)
+            *exact = false;
 
         if (surf_idx != UINT32_MAX) {
             /* Check if already in array */
@@ -2590,13 +2664,13 @@ static int collect_surfaces_recursive(alea_system_t* sys,
         }
     } else if (op == ALEA_OP_COMPLEMENT) {
         /* Complement has one child in left */
-        if (collect_surfaces_recursive(sys, node->operation.left, surface_indices, count, capacity) != 0)
+        if (collect_surfaces_recursive(sys, node->operation.left, surface_indices, count, capacity, exact) != 0)
             return -1;
     } else {
         /* Binary operation: union, intersection, difference */
-        if (collect_surfaces_recursive(sys, node->operation.left, surface_indices, count, capacity) != 0)
+        if (collect_surfaces_recursive(sys, node->operation.left, surface_indices, count, capacity, exact) != 0)
             return -1;
-        if (collect_surfaces_recursive(sys, node->operation.right, surface_indices, count, capacity) != 0)
+        if (collect_surfaces_recursive(sys, node->operation.right, surface_indices, count, capacity, exact) != 0)
             return -1;
     }
     return 0;
@@ -2623,6 +2697,7 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
         sys->universes.data[u].recovery_surfaces = NULL;
         sys->universes.data[u].recovery_surface_count = 0;
         sys->universes.data[u].recovery_surfaces_attempted = false;
+        sys->universes.data[u].recovery_surfaces_exact = false;
     }
 
     /* A failed rebuild must never leave the ready bit set. */
@@ -2645,6 +2720,7 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
         free(cell->surface_indices);
         cell->surface_indices = NULL;
         cell->surface_index_count = 0;
+        cell->surface_index_exact = false;
 
         /* Skip void cells (no geometry) */
         if (cell->root_node_id == ALEA_NODE_ID_INVALID)
@@ -2655,7 +2731,8 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
         size_t count = 0;
         size_t capacity = 0;
 
-        if (collect_surfaces_recursive(sys, cell->root_node_id, &indices, &count, &capacity) != 0) {
+        bool exact = true;
+        if (collect_surfaces_recursive(sys, cell->root_node_id, &indices, &count, &capacity, &exact) != 0) {
             free(indices);
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Building cell surface index");
             return -1;
@@ -2663,6 +2740,7 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
 
         /* Store result (shrink to exact size) */
         if (count > 0) {
+            cell->surface_index_exact = exact;
             cell->surface_indices = realloc(indices, count * sizeof(uint32_t));
             if (!cell->surface_indices) {
                 cell->surface_indices = indices;  /* Keep original if shrink fails */

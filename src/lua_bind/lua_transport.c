@@ -618,7 +618,7 @@ static void add_tally(lua_State* L, int idx, transport_guard_t* guard) {
 }
 
 static void push_result(lua_State* L, const alea_transport_result_t* result) {
-    lua_createtable(L, 0, 17);
+    lua_createtable(L, 0, 18);
     set_integer(L, "histories", result->histories);
     set_integer(L, "absorbed", result->absorbed);
     set_integer(L, "replaced", result->replaced);
@@ -633,6 +633,13 @@ static void push_result(lua_State* L, const alea_transport_result_t* result) {
     set_integer(L, "photon_absorbed", result->photon_absorbed);
     set_integer(L, "photon_replaced", result->photon_replaced);
     set_integer(L, "photon_leaked", result->photon_leaked);
+    lua_createtable(L, 0, 5);
+    set_integer(L, "gaps", result->recovery.gaps);
+    set_integer(L, "overlaps", result->recovery.overlaps);
+    set_number(L, "distance_cm", result->recovery.distance_cm);
+    set_integer(L, "last_enter_surface_id", result->recovery.last_enter_surface_id);
+    set_integer(L, "last_exit_surface_id", result->recovery.last_exit_surface_id);
+    lua_setfield(L, -2, "recovery");
     push_floats(L, result->track_length, result->cell_count);
     lua_setfield(L, -2, "track_length");
     push_floats(L, result->track_length_squared, result->cell_count);
@@ -722,6 +729,9 @@ static int transport_run(lua_State* L) {
     if (n < 0) return luaL_error(L, "invalid max_pending_particles");
     options.max_pending_particles = (size_t)n;
     options.max_segment_distance = number_field(L, 3, "max_segment_distance", 100);
+    static const char* const modes[] = {"strict", "fast", "interval", "transport"};
+    options.navigation_validation = (alea_nav_validation_mode_t)enum_field(
+        L, 3, "navigation_validation", modes, 4, ALEA_NAV_VALIDATE_STRICT);
     lua_getfield(L, 3, "boundary_distance_tolerance");
     if (!lua_isnil(L, -1)) {
         options.boundary_distance_tolerance = luaL_checknumber(L, -1);
@@ -764,10 +774,14 @@ static int transport_run(lua_State* L) {
     alea_transport_failure_t failure = {0};
     err = alea_transport_run_sampled_source(sys, guard->bindings,
         alea_source_sample, source, &options, &guard->result, &failure);
-    if (err != ALEA_OK)
-        return luaL_error(L, "transport failed: %s (history %u, cell %d, position %.6g %.6g %.6g)",
+    if (err != ALEA_OK) {
+        char message[256];
+        snprintf(message, sizeof(message),
+            "transport failed: %s (history %u, cell %d, position %.6g %.6g %.6g)",
             alea_error_string(err), failure.history_id, failure.cell_id,
             failure.position[0], failure.position[1], failure.position[2]);
+        return luaL_error(L, "%s", message);
+    }
     push_result(L, &guard->result);
     return 1;
 }

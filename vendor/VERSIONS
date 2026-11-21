@@ -45,3 +45,12 @@ expat/
   Updates:     verify release checksum, replace those paths unchanged, update
                this entry, verify expat_prefix.h covers all global definitions,
                and run the XML tests, sanitizers, and fuzz targets.
+
+nuklear/
+  Description: C widgets for the SDL 3D viewer inspector
+  Version:     4.12.7
+  Source:      https://github.com/Immediate-Mode-UI/Nuklear/archive/refs/tags/4.12.7.tar.gz
+  SHA256:      5809afbb2e1182894d283f56e586d5aec09ab5ae9c936be51d55033ec6ea77bf
+  License:     MIT or public domain (see LICENSE)
+  Contents:    nuklear.h, LICENSE, demo/sdl_renderer/nuklear_sdl_renderer.h
+  Patches:     none

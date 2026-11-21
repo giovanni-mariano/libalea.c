@@ -91,6 +91,37 @@ static void count_callback(uint32_t surface_idx, void* userdata) {
     res->count++;
 }
 
+static void mark_surface(uint32_t index, void* data) {
+    ((uint8_t*)data)[index]++;
+}
+
+TEST(bvh_large_leaf_retains_all_surfaces) {
+    /* Concentric spheres have identical centroids. The depth limit makes
+     * a leaf big enough to exercise both traversal count representations. */
+    const int count = UINT16_MAX + 128;
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    for (int i = 0; i < count; ++i)
+        ASSERT(alea_sphere_surface(sys, i + 1, 0, 0, 0, i + 1) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    uint8_t* seen = calloc((size_t)count, sizeof(*seen));
+    ASSERT_NOT_NULL(seen);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 0, 0, 0, 1, 0, 0), 0);
+    ASSERT_EQ(alea_bvh_traverse(sys->surface_bvh, &ray, 0, count + 1,
+                                mark_surface, seen), count);
+    for (int i = 0; i < count; ++i) ASSERT_EQ(seen[i], 1);
+    free(seen);
+
+    alea_raycast_result_t hits;
+    alea_raycast_result_init(&hits);
+    ASSERT_EQ(alea_raycast_surfaces(sys, &ray, 0, count + 1, &hits), 0);
+    ASSERT_EQ(hits.hits.count, (size_t)count);
+    for (int i = 0; i < count; ++i) ASSERT_EQ(hits.hits.data[i].surface_id, i + 1);
+    alea_raycast_result_free(&hits);
+    alea_destroy(sys);
+}
+
 TEST(bvh_traversal_hit) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

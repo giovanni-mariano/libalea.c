@@ -68,6 +68,15 @@ static int render_selected(alea_system_t* sys, alea_compute_t* compute, alea_pre
     return render_scene(sys, cfg, cam, fb);
 }
 
+static alea_bbox_t render_view_domain(const render_camera_t* cam) {
+    const double* target = cam->target;
+    double distance = hypot(hypot(cam->eye[0] - target[0], cam->eye[1] - target[1]),
+                            cam->eye[2] - target[2]);
+    double span = 2 * fmax(distance, cam->ortho_height);
+    return (alea_bbox_t){target[0]-span, target[0]+span, target[1]-span,
+                         target[1]+span, target[2]-span, target[2]+span};
+}
+
 static void destroy_compute(alea_compute_t* compute) {
 #ifdef ALEA_VIEW_METAL
     alea_compute_destroy(compute);
@@ -143,11 +152,12 @@ static void print_usage(const char* prog) {
 "  --aa N                       Supersampling NxN (default: 1)\n"
 "\n"
 "PERFORMANCE:\n"
-"  --backend cpu|regional|metal  Renderer (default: cpu)\n"
+"  --backend cpu|regional|metal  Force a rendering backend\n"
+"      Interactive CPU surface views prepare regional after a slow preview\n"
 "      Regional: prepared CPU surface queries, parallel tiles\n"
 "      Interactive metal: automatic preview and tile refinement\n"
 "  --threads N                  Thread count (default: all cores)\n"
-"  --tile-size N                Tile size in pixels (default: 32)\n"
+"  --tile-size N                Tile size in pixels (16 for interactive CPU surfaces, otherwise 32)\n"
 "  --preview                    Write quick 1/4-res preview first\n"
 "\n"
 "AUXILIARY:\n"
@@ -241,7 +251,9 @@ int main(int argc, char** argv) {
     render_config_t cfg;
     render_config_init(&cfg);
 
+    cfg.tile_size = 0; /* Resolve the default after parsing the viewing mode. */
     int interactive = 0, use_metal = 0, use_regional = 0;
+    const char* backend = NULL;
     alea_prepared_queries_t* prepared = NULL;
     alea_compute_t* compute = NULL;
 
@@ -260,8 +272,9 @@ int main(int argc, char** argv) {
             if (++i >= argc || (strcmp(argv[i], "cpu") && strcmp(argv[i], "metal") && strcmp(argv[i], "regional"))) {
                 fprintf(stderr, "--backend expects cpu, regional, or metal\n"); return 1;
             }
-            use_regional = !strcmp(argv[i], "regional");
-            use_metal = !strcmp(argv[i], "metal");
+            backend = argv[i];
+            use_regional = !strcmp(backend, "regional");
+            use_metal = !strcmp(backend, "metal");
         } else if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
             if (++i < argc) output_file = argv[i];
         } else if (strcmp(arg, "-w") == 0 || strcmp(arg, "--width") == 0) {
@@ -420,6 +433,9 @@ int main(int argc, char** argv) {
         render_config_free(&cfg);
         return 1;
     }
+    if (cfg.tile_size <= 0)
+        cfg.tile_size = interactive && !use_metal && cfg.render_mode != RENDER_MODE_XRAY
+            ? 16 : RENDER_DEFAULT_TILE;
     if (cfg.aa_samples < 1) cfg.aa_samples = 1;
     if (cfg.aa_samples > RENDER_MAX_AA) cfg.aa_samples = RENDER_MAX_AA;
 
@@ -502,12 +518,7 @@ int main(int argc, char** argv) {
     if (use_regional) {
         /* Center the index on the initial view. Orbit/zoom reuse it, and
          * rays outside the indexed region use the native hierarchy. */
-        double dx = cam.eye[0] - cam.target[0], dy = cam.eye[1] - cam.target[1];
-        double dz = cam.eye[2] - cam.target[2];
-        double span = 2 * fmax(hypot(hypot(dx, dy), dz), cam.ortho_height);
-        alea_bbox_t domain = {cam.target[0]-span, cam.target[0]+span,
-                              cam.target[1]-span, cam.target[1]+span,
-                              cam.target[2]-span, cam.target[2]+span};
+        alea_bbox_t domain = render_view_domain(&cam);
         double start = get_time_ms();
         prepared = alea_prepared_queries_create(sys, &domain);
         if (!prepared) {
@@ -531,7 +542,8 @@ int main(int argc, char** argv) {
 
 #ifdef ALEA_USE_SDL
     if (interactive) {
-        int rc = render_interactive(sys, compute, prepared, &cfg, &cam, output_file, use_metal);
+        int automatic = !backend && cfg.render_mode != RENDER_MODE_XRAY;
+        int rc = render_interactive(sys, compute, prepared, &cfg, &cam, output_file, use_metal, automatic);
         render_config_free(&cfg);
         alea_prepared_queries_destroy(prepared);
         destroy_compute(compute);

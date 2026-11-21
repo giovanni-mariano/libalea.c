@@ -113,7 +113,8 @@ static alea_error_t validate(const alea_system_t* sys,
           o->boundary_distance_tolerance < 0.0)) ||
         (o->navigation_validation != ALEA_NAV_VALIDATE_STRICT &&
          o->navigation_validation != ALEA_NAV_VALIDATE_FAST &&
-         o->navigation_validation != ALEA_NAV_VALIDATE_INTERVAL))
+         o->navigation_validation != ALEA_NAV_VALIDATE_INTERVAL &&
+         o->navigation_validation != ALEA_NAV_VALIDATE_TRANSPORT))
         return ALEA_ERR_INVALID_ARG;
     if (o->histories-1 > UINT32_MAX-o->history_offset)
         return ALEA_ERR_OVERFLOW;
@@ -365,6 +366,7 @@ alea_error_t alea_adjoint_run(
             break;
         }
     }
+    if (err == ALEA_OK) alea_ray_navigator_recovery_stats(nav, &output->recovery);
     alea_ray_navigator_destroy(nav);
     if (err != ALEA_OK) return err;
     output->histories = o->histories;

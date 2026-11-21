@@ -13,12 +13,7 @@ typedef struct {
 ALEA_VEC_DEFINE(spatial_nodes, spatial_node_t);
 ALEA_VEC_DEFINE(cell_ids, uint32_t);
 
-typedef struct { double lo[3], hi[3]; } interval_box_t;
-
-static inline interval_box_t interval_box_from(alea_bbox_t b) {
-    return (interval_box_t){{b.min_x,b.min_y,b.min_z},{b.max_x,b.max_y,b.max_z}};
-}
-
+#include "raycast/ray_box_sign.h"
 
 enum { GUARD_EMPTY=0, GUARD_ANY=1 };
 #define GUARD_BOX UINT32_C(0x20000000)
@@ -35,14 +30,6 @@ typedef struct {
     size_t capacity;
     bool failed;
 } guard_pool_t;
-
-typedef struct { double k[10]; int kind; unsigned axis; } guard_surface_t;
-static inline double guard_value(const double* k,double x,double y,double z) {
-    return k[0]*x*x+k[1]*y*y+k[2]*z*z+k[3]*x*y+k[4]*y*z+k[5]*x*z+
-           k[6]*x+k[7]*y+k[8]*z+k[9];
-}
-
-
 
 typedef struct {
     float lo[3], hi[3];
@@ -101,11 +88,49 @@ struct regional_worker {
     struct interval_level* levels;
     interval_fallback_stats_t fallback;
 };
+enum { CHILD_BOUND_BLOCK_SIZE = 256 };
+enum { CHILD_REGION_ABSENT, CHILD_REGION_BUILDING, CHILD_REGION_READY };
+typedef struct child_bound_block {
+    struct child_bound_block* next;
+    alea_node_bbox_t envelope;
+    alea_node_bbox_t cells[];
+} child_bound_block_t;
+
+typedef struct {
+    alea_node_bbox_t box;
+    uint32_t branch, cell_root;
+} render_bound_t;
+ALEA_VEC_DEFINE(render_bounds, render_bound_t);
+
 struct interval_index {
+    atomic_uint references;
     alea_mapped_file_t mapping;
     void (*detach_mapping)(struct interval_index*);
     size_t leaf_size;
     bool selective;
+    bool points_only;
+    bool root_only; /* Points independent of hierarchy, with optional child indexes. */
+    interval_child_mode_t child_mode;
+    bool time_child_points;
+    size_t child_count;
+    size_t scan_count;
+    size_t child_bounds_count;
+    struct universe_scans {
+        atomic_uint_fast64_t visits;
+        atomic_uint_fast64_t tests;
+        atomic_uint_fast64_t local_ns;
+        atomic_uint_fast64_t unfiltered_ns;
+        atomic_uint_fast64_t build_ns;
+        _Atomic size_t covered;
+        atomic_int building;
+        atomic_int region_state;
+        child_bound_block_t* first;
+        child_bound_block_t* last;
+        interval_index_t* region;
+        bool indexed;
+        alea_node_bbox_t* bounds;
+    }* scans;
+    double build_seconds;
 
     struct proof_entry {uint32_t stamp,node,signs;}* proof_table;
     struct shape_proof {uint32_t stamp,signs;}* primitive_proofs;
@@ -144,6 +169,12 @@ struct interval_index {
     alea_bbox_t domain,envelope;alea_bbox_t* domains;
     struct exterior_region {alea_bbox_t box;uint32_t root;} exterior[6];
     bool exterior_ready;
+    bool render_bounds_attempted, render_bounds_ready;
+    size_t render_void_prefix_count; /* Leading terminal voids in world definition order. */
+    uint32_t render_exterior_void_root;
+    alea_bbox_t render_core;
+    render_bounds_t render_boxes;
+    alea_size_vec_t exterior_point_cells;
     double proof_margin;
     alea_system_t* sys;
     uint64_t geometry_generation, material_generation;
@@ -151,6 +182,15 @@ struct interval_index {
     spatial_nodes_t nodes;
     struct interval_card { uint32_t primitive; int number; } *card_info;
 };
+/* The pointer is written once before publication. Edits and teardown require
+ * exclusive model access, so a reader can retain it for the whole lookup. */
+static inline const interval_index_t* published_child_region(const struct universe_scans* scans) {
+    return atomic_load_explicit(&scans->region_state, memory_order_acquire) == CHILD_REGION_READY
+        ? scans->region : NULL;
+}
+void interval_extend_child_bounds(const interval_index_t* idx, const alea_universe_t* u,
+                                  size_t covered);
+
 /* A compact instruction has a branch byte and 24 operand bits.
  * Boxes use two adjacent operand tags for their larger node indices. */
 enum {

@@ -35,7 +35,7 @@ typedef struct {
     alea_bbox_t bbox;           /* Bounding box (48 bytes) */
     uint32_t left_or_first;    /* Left child index OR first surface index */
     uint32_t right_child;      /* Right child index (only for internal nodes) */
-    uint16_t surface_count;    /* 0 = internal node, >0 = leaf node */
+    uint32_t surface_count;    /* 0 = internal node, >0 = leaf node */
     uint8_t axis;              /* Split axis (0=X, 1=Y, 2=Z) */
     uint8_t pad;               /* Padding for alignment */
 } alea_bvh_node_t;
@@ -109,7 +109,7 @@ typedef void (*alea_bvh_hit_callback)(uint32_t surface_idx, void* userdata);
  * @param userdata User-provided context
  */
 typedef void (*alea_bvh_batch_callback)(const uint32_t* surface_indices,
-                                        uint16_t count, void* userdata);
+                                        uint32_t count, void* userdata);
 
 /**
  * @brief Traverse BVH and report candidate surfaces (per-surface callback)

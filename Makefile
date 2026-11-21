@@ -274,6 +274,7 @@ RAYCAST_SRCS = \
 	$(RAYCAST_DIR)/regional/regional_trace.c \
 	$(RAYCAST_DIR)/regional/interval_build.c \
 	$(RAYCAST_DIR)/ray_request.c \
+	$(RAYCAST_DIR)/ray_substep.c \
 	$(RAYCAST_DIR)/ray_coverage.c \
 	$(RAYCAST_DIR)/ray_coverage_api.c \
 	$(RAYCAST_DIR)/ray_intersect.c \
@@ -1382,13 +1383,10 @@ $(BIN_DIR)/plane_bounds$(EXEEXT): benchmarks/plane_bounds.c $(LIB_CORE) | $(BIN_
 plane-bounds-benchmark: $(BIN_DIR)/plane_bounds$(EXEEXT)
 	$(BIN_DIR)/plane_bounds$(EXEEXT)
 
-$(BIN_DIR)/model_lifecycle$(EXEEXT): benchmarks/model_lifecycle.c $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
+$(BIN_DIR)/model_lifecycle$(EXEEXT): benchmarks/model_lifecycle.c benchmarks/navigator_replay.h benchmarks/interval_memory.h $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
 
-$(BIN_DIR)/regional_render_scaling$(EXEEXT): benchmarks/regional_render_scaling.c $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
-
-$(BIN_DIR)/compare_parent_interval$(EXEEXT): benchmarks/parent_interval.c benchmarks/interval_image.c benchmarks/interval_image.h benchmarks/interval_memory.h $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
+$(BIN_DIR)/compare_parent_interval$(EXEEXT): benchmarks/parent_interval.c benchmarks/interval_overlap.h benchmarks/interval_image.c benchmarks/interval_image.h benchmarks/interval_memory.h $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $< benchmarks/interval_image.c $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
 
 .PHONY: check-parent-intervals

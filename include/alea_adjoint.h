@@ -72,6 +72,7 @@ typedef struct {
     double sum_squared; /* sum of squared complete history scores */
     double mean;        /* physical detector response, per physical-source second */
     double standard_error; /* NAN when histories == 1 */
+    alea_nav_recovery_stats_t recovery;
 } alea_adjoint_result_t;
 
 typedef struct {

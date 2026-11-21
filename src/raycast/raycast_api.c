@@ -20,6 +20,7 @@
 #include "alea_slice.h"
 #include "raycast.h"
 #include "batch_internal.h"
+#include "regional/interval_index.h"
 #include "ray_intersect.h"
 #include "ray_epsilon.h"
 #include "bvh.h"
@@ -29,6 +30,7 @@
 #include "primitives/bbox.h"
 #include "primitives/primitive_eval.h"
 #include "util/alea_parallel.h"
+#include "util/compat.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -138,6 +140,7 @@ typedef struct {
  * products, which depend on the captured hierarchy path. */
 typedef struct {
     alea_raycast_result_t trace;
+    regional_worker_t* regional;
     alea_ray_segment_vec_t arena;
     uint64_t* row_offsets;
     size_t row_count;
@@ -570,6 +573,7 @@ static void batch_work_stats_merge(alea_raycast_batch_work_stats_t* target,
 static void batch_segment_worker_free(alea_batch_segment_worker_t* worker) {
     if (!worker) return;
     alea_raycast_result_free(&worker->trace);
+    alea_regional_worker_destroy(worker->regional);
     alea_vec_free(&worker->arena);
     free(worker->row_offsets);
     memset(worker, 0, sizeof(*worker));
@@ -580,8 +584,8 @@ static int batch_segment_worker_build(
     size_t ray_count, double scalar_t_max, const double* t_mins,
     const double* t_maxs, uint32_t fields, uint64_t max_segments,
     atomic_uint_fast64_t* live_segment_count,
-    alea_batch_segment_worker_t* worker, size_t worker_index,
-    size_t worker_count) {
+    const interval_index_t* index, alea_batch_segment_worker_t* worker, size_t worker_index,
+    size_t worker_count, bool sample_recovery) {
     const size_t owned_rows = ray_count > worker_index
         ? 1 + (ray_count - 1 - worker_index) / worker_count : 0;
     worker->row_offsets = calloc(owned_rows + 1, sizeof(*worker->row_offsets));
@@ -590,9 +594,17 @@ static int batch_segment_worker_build(
                               "failed to allocate segment worker offsets");
         return -1;
     }
+    if (index) {
+        worker->regional = alea_regional_worker_create(index);
+        if (!worker->regional) return -1;
+    }
     worker->row_count = owned_rows;
     alea_raycast_result_init(&worker->trace);
     alea_vec_init(&worker->arena);
+    /* Sample after setup, starting with two completed rows. Recheck at
+     * doubling intervals so cheap leading rays cannot mask an expensive tail. */
+    size_t next_sample = sample_recovery ? 2 : 0;
+    double sample_start = sample_recovery ? alea_monotonic_seconds() : 0.0;
     for (size_t row = worker_index, local_row = 0; row < ray_count;
          row += worker_count, local_row++) {
         if (alea_interrupted()) return -1;
@@ -604,13 +616,13 @@ static int batch_segment_worker_build(
         const double* o = &origins_xyz[row * 3];
         const double* d = &directions_xyz[row * 3];
         alea_ray_t ray;
-        if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0 ||
-            alea_raycast_hier_segments_nocache(
-                sys, &ray, t_maxs ? t_maxs[row] : scalar_t_max,
-                (fields & ALEA_RAY_BATCH_SURFACES) != 0, &worker->trace) != 0) {
-            worker->status = -1;
-            return -1;
-        }
+        if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2])) return -1;
+        double limit = t_maxs ? t_maxs[row] : scalar_t_max;
+        int rc = worker->regional
+            ? alea_regional_trace_segments(worker->regional, &ray, limit, &worker->trace)
+            : alea_raycast_hier_segments_nocache(sys, &ray, limit,
+                  (fields & ALEA_RAY_BATCH_SURFACES) != 0, &worker->trace);
+        if (rc) return -1;
         if (t_mins && t_mins[row] > 0.0) {
             const double t_min = t_mins[row];
             size_t write = 0;
@@ -638,6 +650,16 @@ static int batch_segment_worker_build(
         }
         worker->row_offsets[local_row + 1] = worker->arena.count;
         batch_work_stats_accumulate(&worker->work_stats, &worker->trace);
+        size_t completed = local_row + 1;
+        if (completed == next_sample) {
+            next_sample = 0;
+            if (!alea_system_query_cache_ready(sys, ALEA_CACHE_RAY_RECOVERY)) {
+                double elapsed = alea_monotonic_seconds() - sample_start;
+                double projected = elapsed * (owned_rows - completed) / completed;
+                if (projected >= 0.5 && alea_system_try_prepare_ray_recovery(sys)) return -1;
+                if (completed < owned_rows / 2) next_sample = completed * 2;
+            }
+        }
     }
     return 0;
 }
@@ -653,8 +675,10 @@ typedef struct {
     uint32_t fields;
     uint64_t max_segments;
     atomic_uint_fast64_t* live_segment_count;
+    const interval_index_t* index;
     alea_batch_segment_worker_t* workers;
     size_t worker_count;
+    bool sample_recovery;
 } batch_segment_build_context_t;
 
 static int batch_segment_build_range(void* opaque, size_t runtime_worker,
@@ -666,8 +690,8 @@ static int batch_segment_build_range(void* opaque, size_t runtime_worker,
             context->sys, context->origins_xyz, context->directions_xyz,
             context->ray_count, context->scalar_t_max, context->t_mins,
             context->t_maxs, context->fields, context->max_segments,
-            context->live_segment_count, &context->workers[worker], worker,
-            context->worker_count);
+            context->live_segment_count, context->index, &context->workers[worker], worker,
+            context->worker_count, context->sample_recovery);
     }
     return 0;
 }
@@ -734,9 +758,28 @@ static int raycast_hier_batch_execute_common_arena(
         return -1;
     }
 
+    const interval_index_t* index = sys->ray_batch_index;
+    bool sample_recovery = !index && ray_count / worker_count >= 8 &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_RAY_RECOVERY);
+    if (!ray_count || (fields & ALEA_RAY_BATCH_SURFACES)) {
+        index = NULL;
+        sample_recovery = false;
+    }
+    if (index || sample_recovery) {
+        /* The interval producer partitions finite flights from their origin.
+         * A mixed descriptor uses one producer for every row. */
+        for (size_t i = 0; i < ray_count; ++i) {
+            double limit = t_maxs ? t_maxs[i] : scalar_t_max;
+            if ((t_mins && t_mins[i] > 0) || limit <= 0 || limit == DBL_MAX) {
+                index = NULL;
+                sample_recovery = false;
+                break;
+            }
+        }
+    }
     batch_segment_build_context_t build_context = {
         sys, origins_xyz, directions_xyz, ray_count, scalar_t_max, t_mins,
-        t_maxs, fields, max_segments, live_segment_count, workers, worker_count
+        t_maxs, fields, max_segments, live_segment_count, index, workers, worker_count, sample_recovery
     };
     alea_parallel_status_t parallel_status = alea_parallel_for(
         worker_count, 1, worker_count, ALEA_PARALLEL_STATIC_BLOCK,
@@ -864,6 +907,7 @@ static int raycast_hier_batch_execute_common_arena(
                               alea_parallel_status_string(parallel_status));
         goto cleanup;
     }
+    next.work_stats.regional_ray_count = index ? ray_count : 0;
     for (size_t i = 0; i < worker_count; i++) {
         batch_work_stats_merge(&next.work_stats, &workers[i].work_stats);
         batch_segment_worker_free(&workers[i]);

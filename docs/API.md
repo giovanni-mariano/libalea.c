@@ -317,6 +317,75 @@ Original surface definitions supply ray crossings. After a geometry edit or
 snapshot load, call the function again to enable the optimization. Preparation
 returns zero on success, including when no region qualifies, and -1 on failure.
 
+### Shared acceleration for repeated point lookups
+
+For a first selected-owner point lookup, call `alea_prepare_point_lookup(sys)`.
+It reuses an active regional point index or prepares the spatial hierarchy.
+Ray-specific caches can be built later by a ray query.
+
+`alea_find_cell_at`, `alea_find_cell` and `alea_material_at` share a point
+index. With the spatial hierarchy ready, they time one in 16 lookups.
+After at least 64 calls and an estimated 125 ms of hierarchy lookup work,
+one caller prepares the adaptive regional index synchronously. Other readers
+continue on the hierarchy until publication. If there is no usable domain
+or an optional allocation fails, ordinary lookups continue on the hierarchy.
+Geometry and material edits and `alea_clear_selected_queries` reset observation.
+
+Call `alea_prepare_point_acceleration(sys)` to prepare the adaptive index
+up front or reuse an automatically built index. Explicit domain preparation
+takes precedence over an automatic index. Existing readers may still hold
+the automatic index, so the model retains it until an exclusive clear or edit.
+Changing a previously requested explicit scope still requires clearing first.
+
+```c
+int alea_prepare_selected_queries(alea_system_t* sys, const alea_bbox_t* domain);
+int alea_selected_query_stats(const alea_system_t* sys, alea_selected_query_stats_t* stats);
+void alea_clear_selected_queries(alea_system_t* sys);
+```
+
+For a sustained workload of selected-owner lookups, call
+`alea_prepare_selected_queries(sys, NULL)` once. It prepares the hierarchy and
+derives a working box from bounded world cells. Pass a finite, positive-volume
+box to select a working volume explicitly. Geometry beyond the indexed regions
+remains queryable through the hierarchy. With no usable automatic domain,
+preparation succeeds and point lookup uses the hierarchy.
+
+`alea_find_cell_at` returns the deepest selected cell and material IDs.
+`alea_find_cell` returns its internal index. Both use the shared index after
+preparation and support concurrent readers. Repeated preparation reuses the
+index. Preparation returns zero on success and -1 on error. Clearing it,
+changing its domain, editing the model and destroying it require exclusive
+access. Geometry and material edits discard the index. A clone or reopened
+snapshot can prepare its own index.
+
+`alea_selected_query_stats` returns 1 when the index is active and reports its
+domain, retained bytes, build time and hierarchy fallback visits. Ordinary
+`alea_prepare_query_acceleration` keeps the lower startup cost of the hierarchy.
+
+A cold finite geometry-only batch starts on the spatial hierarchy. When
+a worker has at least eight rays, it measures its first two completed rays
+and checks again at doubling intervals. If its projected remaining work
+reaches half a second, it can prepare the ordered child-cell and surface
+lists used by boundary recovery. Completed rows stay in their original
+positions. The lists are shared by readers and invalidated by geometry edits.
+An active regional index takes precedence for eligible batches.
+
+For repeated finite segment batches, call `alea_prepare_ray_acceleration(sys, NULL)`
+once, or pass a finite box in model coordinates. If you already use a prepared
+handle for tracing or rendering, `alea_set_ray_batch_accelerator(sys, prepared)`
+shares its index with the model. Each batch worker owns its traversal scratch.
+The caller may release its handle after attachment. Passing NULL as the handle
+detaches it. Geometry edits, material edits and model destruction release the
+model's reference. Finish active queries before preparing, attaching, detaching
+or editing.
+
+With this preparation, `alea_raycast_hier_batch` uses regional traversal for
+finite flights from the origin requesting distances, cells, materials, densities
+or resolution flags. Surface IDs, projected owners, paths, open flights and
+batches with positive lower distance limits use the hierarchy for every row.
+On overlaps the regional producer selects the first owner in model order.
+Particle navigation uses its dedicated boundary walker.
+
 ### alea_prepare_world_point_grid
 
 ```c
@@ -1686,6 +1755,24 @@ allowed separately.
 
 ### Transition and ray-slice diagnostics
 
+For a suspect crossing inside a fill, call
+`alea_ray_diagnose_substep_fill(sys, origin, direction, t, &finding)`.
+The query checks parallel planes in a single ordinary fill placement. A
+return value of 1 identifies an open interval with no child cell. Read
+`enter_surface_id` and `exit_surface_id` in ray order and `width` in world
+length units. Both reported distances may round to the same double. A return
+value of 0 is inconclusive. The query returns -1 on error.
+
+When the selected walker steps directly between the flanking children of a
+verified gap, a validated transmissive boundary reports
+`event.after.kind == ALEA_NAV_UNRESOLVED` and further validated flight is
+refused. Interval validation can also reject the flight before publishing a
+boundary. The check applies to strict and interval validation modes.
+`alea_ray_navigator_substep_fill(navigator, &finding)` copies the finding
+at a verified unresolved boundary. It returns 1 when a finding is available.
+Regional tracing refines the two plane intersections before emitting
+segments. Equal rounded roots contribute zero to the published path length.
+
 `alea_check_transition_local()` validates one supplied boundary witness in an
 active universe-local frame and returns an `alea_transition_result_t` with
 candidate/owner evidence. Query acceleration must already be prepared.
@@ -2206,6 +2293,22 @@ Set `cfg->threads` to limit tile workers. They share one index and reuse
 private ray buffers across frames. The handle retains storage for the largest
 worker count used until it is destroyed. Use it from one caller at a time
 and recreate it after a geometry or material edit. Use `render_scene` for X-ray images.
+
+#### alea_render_scene_progressive
+
+```c
+int alea_render_scene_progressive(alea_system_t* sys, alea_prepared_queries_t* prepared,
+                                  const render_config_t* cfg, const render_camera_t* cam,
+                                  render_framebuffer_t* fb, const render_updates_t* updates);
+```
+
+Render a CPU surface view with the hierarchy or an optional prepared index.
+Tile workers call `updates->tile_done` with each completed rectangle. Copy only
+that rectangle during the callback and synchronize any shared display state.
+Workers poll `updates->cancelled` during traversal. Use a thread-safe flag that
+stays set for the rest of the call. Either callback may be NULL. The function
+joins the workers before returning 0 for completion, 1 for local cancellation,
+or -1 for an error. A cancelled call can leave a partially written framebuffer.
 
 #### render_framebuffer_create
 

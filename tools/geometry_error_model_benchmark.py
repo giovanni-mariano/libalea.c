@@ -80,8 +80,8 @@ def _parse_pages(value: str, page_count: int) -> list[int]:
     return pages
 
 
-def run_benchmark(model_path: Path, *, value: float = 80.0,
-                  bounds=(500.0, 1500.0, -500.0, 500.0),
+def run_benchmark(model_path: Path, *, value: float = 0.0,
+                  bounds=(-40.0, 40.0, -40.0, 40.0),
                   tile_columns: int = 22, tile_rows: int = 20,
                   pages: str = "0", interior_probes_per_axis: int = 3,
                   max_index_bytes: int = 32 * 1024 * 1024) -> dict[str, Any]:
@@ -144,7 +144,7 @@ def run_benchmark(model_path: Path, *, value: float = 80.0,
             "cpu_count": os.cpu_count(),
         },
         "workload": {
-            "preset": "elite_z80",
+            "preset": "z_slice",
             "axis": "z", "value": value,
             "bounds": list(bounds),
             "tile_columns": tile_columns, "tile_rows": tile_rows,
@@ -203,9 +203,9 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--pages", default="0",
                         help="comma-separated ordinals, half-open ranges, or all")
-    parser.add_argument("--value", type=float, default=80.0)
+    parser.add_argument("--value", type=float, default=0.0)
     parser.add_argument("--bounds", type=float, nargs=4,
-                        default=(500.0, 1500.0, -500.0, 500.0))
+                        default=(-40.0, 40.0, -40.0, 40.0))
     parser.add_argument("--tile-columns", type=int, default=22)
     parser.add_argument("--tile-rows", type=int, default=20)
     parser.add_argument("--interior-probes-per-axis", type=int, default=3)

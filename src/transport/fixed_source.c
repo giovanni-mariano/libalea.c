@@ -4,6 +4,7 @@
 
 #include "alea_transport.h"
 #include "tally_internal.h"
+#include "raycast/raycast.h"
 #include "alea.h"
 #include "../rng/alea_rng.h"
 #include "../rng/alea_rng_distribution.h"
@@ -21,6 +22,7 @@ typedef struct {
     double position[3];
     alea_nuc_particle_state_t particle;
     uint32_t ordinal;
+    alea_transport_recovery_seed_t recovery;
 } pending_particle_t;
 
 void alea_transport_result_free(alea_transport_result_t* result) {
@@ -184,7 +186,8 @@ alea_error_t alea_transport_run_sampled_source(
           options->boundary_distance_tolerance < 0.0)) ||
         (options->navigation_validation != ALEA_NAV_VALIDATE_STRICT &&
          options->navigation_validation != ALEA_NAV_VALIDATE_FAST &&
-         options->navigation_validation != ALEA_NAV_VALIDATE_INTERVAL))
+         options->navigation_validation != ALEA_NAV_VALIDATE_INTERVAL &&
+         options->navigation_validation != ALEA_NAV_VALIDATE_TRANSPORT))
         return ALEA_ERR_INVALID_ARG;
     if (options->histories - 1 > UINT32_MAX - options->history_offset)
         return ALEA_ERR_OVERFLOW;
@@ -280,6 +283,7 @@ alea_error_t alea_transport_run_sampled_source(
         bank[0].particle = source.particle;
         memcpy(bank[0].position, source.position, sizeof(bank[0].position));
         bank[0].ordinal = 0;
+        bank[0].recovery.other = 0;
         size_t bank_count = 1;
         uint64_t next_ordinal = 1;
         uint32_t events = 0;
@@ -296,7 +300,8 @@ alea_error_t alea_transport_run_sampled_source(
             memcpy(position, current.position, sizeof(position));
             alea_nav_location_t location;
             if (alea_ray_navigator_restart(navigator, position,
-                                           particle.direction, &location) != 0) {
+                                           particle.direction, &location) != 0 ||
+                (current.recovery.other && alea_nav_resume_recovery(navigator, &current.recovery, &location))) {
                 err = fail_transport(failure, h, 0, NULL, position,
                                      particle.energy, ALEA_ERR_INVALID_STATE);
                 if (failure) failure->particle_ordinal = particle_ordinal;
@@ -562,6 +567,7 @@ alea_error_t alea_transport_run_sampled_source(
                     if (err != ALEA_OK) break;
                     for (size_t i = 0; i < secondaries.count; ++i) {
                         pending_particle_t* child = &bank[bank_count++];
+                        alea_nav_get_recovery_seed(navigator, &child->recovery);
                         child->particle = emitted[i];
                         memcpy(child->position, position, sizeof(position));
                         child->ordinal = (uint32_t)next_ordinal++;
@@ -699,6 +705,7 @@ alea_error_t alea_transport_run_sampled_source(
             }
         }
     }
+    alea_ray_navigator_recovery_stats(navigator, &result.recovery);
     alea_ray_navigator_destroy(navigator);
     free(history_path);
     free(bank);

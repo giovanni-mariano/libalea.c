@@ -54,7 +54,7 @@ static int choose_domains(interval_index_t* idx) {
                     const alea_cell_entry_t* c=sys->cells.data+id;
                     if(c->fill_universe<=0 || c->lat_type)continue;
                     const alea_universe_t* target=alea_get_universe(sys,c->fill_universe);
-                    const alea_matrix_t* matrix=alea_hier_spatial_get_cell_fill_matrix(sys,id);
+                    const alea_matrix_t* matrix=alea_cell_fill_matrix(sys,id);
                     if(!target || !matrix || !matrix->has_inverse)continue;
                     size_t child=target-sys->universes.data;
                     if(child==root || child==i)continue;

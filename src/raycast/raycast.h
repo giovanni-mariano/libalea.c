@@ -16,6 +16,17 @@
 
 typedef struct alea_transition_workspace alea_transition_workspace_t;
 
+/* A secondary born during a recovered crossing inherits the two verified
+ * placements. Its own direction must establish a new bounded crossing. */
+typedef struct {
+    alea_nav_location_t incident;
+    uint64_t other;
+    alea_nav_location_kind_t defect;
+} alea_transport_recovery_seed_t;
+void alea_nav_get_recovery_seed(const alea_ray_navigator_t* nav, alea_transport_recovery_seed_t* seed);
+int alea_nav_resume_recovery(alea_ray_navigator_t* nav, const alea_transport_recovery_seed_t* seed,
+                             alea_nav_location_t* location);
+
 /**
  * @file raycast.h
  * @brief Ray casting for CSG geometry
@@ -274,9 +285,14 @@ struct alea_raycast_result {
     /* Fail-closed geometric breakpoint collection for particle validation. */
     /* Recovery retains only the nearest crossing strictly after this t. */
     uint8_t breakpoint_nearest_only;
+    uint8_t transport_fill_filter; /* Use exact card lists to reject empty fill windows. */
     uint8_t recovery_context_warmup; /* Allocate only after repeated scans. */
     void* recovery_context; /* Borrowed scratch, scoped to one nearest recovery. */
     void* recovery_roots; /* Owned optional roots, scoped to one ray/walk. */
+    /* Borrowed by this operation, including nested hierarchy recovery. */
+    int (*cancelled)(void*);
+    void* cancel_user;
+    double recovery_root_limit; /* Optional finite end for cached roots, independent of the search window. */
     double breakpoint_t_min;
     double breakpoint_t_max; /* End of the requested recovery, before nearest-hit clipping. */
     size_t breakpoint_hit_limit;
@@ -353,6 +369,10 @@ struct alea_raycast_result {
 
 /* Typedef for internal use */
 typedef struct alea_raycast_result alea_raycast_result_t;
+
+static inline bool alea_ray_interrupted(const alea_raycast_result_t* result) {
+    return alea_interrupted() || (result->cancelled && result->cancelled(result->cancel_user));
+}
 
 /* Internal canonical event cache for a slice view.  It is owned by the slice
  * module and intentionally opaque; validator/provenance users share it only
@@ -502,6 +522,7 @@ void alea_raycast_batch_result_swap_internal(
  * the public batch ABI while allowing benchmark and diagnostic code to expose
  * outlier rays instead of hiding them behind aggregate throughput. */
 typedef struct {
+    uint64_t regional_ray_count;
     uint64_t max_owner_neighbor_attempts;
     uint64_t max_owner_neighbor_hits;
     uint64_t max_owner_path_attempts;
@@ -788,10 +809,9 @@ int alea_raycast_hier_first_visible_nocache(
     int material_filter, int include_normal, alea_raycast_result_t* scratch,
     alea_ray_first_visible_result_t* out_visible);
 
-/* Opaque rendering: walk locally resolved crossings and stop at the first
- * accepted non-void owner. No full-interval verification or boundary-group
- * enrichment. The optional predicate handles cell/material/density filters
- * in the same traversal that supplies the surface normal. */
+/* Opaque rendering verifies interval ownership and stops at the first accepted
+ * non-void owner. The optional predicate handles cell/material/density filters
+ * in the traversal that supplies the surface normal. */
 typedef int (*alea_raycast_render_accept_t)(
     void* context, int cell_id, int material_id, double density);
 

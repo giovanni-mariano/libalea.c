@@ -188,8 +188,8 @@ def _matching_seed_witnesses(scan: dict[str, Any], seed_point: list[float],
             abs(witness["uv"][1] - v) <= tolerance]
 
 
-def run_seeded_system(system: Any, *, mutation: str, value: float = 80.0,
-                      bounds=(500.0, 1500.0, -500.0, 500.0),
+def run_seeded_system(system: Any, *, mutation: str, value: float = 0.0,
+                      bounds=(-40.0, 40.0, -40.0, 40.0),
                       tile_columns: int = 22, tile_rows: int = 20,
                       page_index: int = 0, probes_per_axis: int = 3,
                       max_index_bytes: int = 32 * 1024 * 1024,
@@ -289,9 +289,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mutation", choices=("gap", "overlap"), required=True)
     parser.add_argument("--page", type=int, default=0)
-    parser.add_argument("--value", type=float, default=80.0)
+    parser.add_argument("--value", type=float, default=0.0)
     parser.add_argument("--bounds", type=float, nargs=4,
-                        default=(500.0, 1500.0, -500.0, 500.0))
+                        default=(-40.0, 40.0, -40.0, 40.0))
     parser.add_argument("--tile-columns", type=int, default=22)
     parser.add_argument("--tile-rows", type=int, default=20)
     parser.add_argument("--interior-probes-per-axis", type=int, default=3)

@@ -1,0 +1,26 @@
+# Collision and distance limit, then independent motion in opposite directions.
+restart parent 0 0 0 1 0 0
+advance parent 0.5 1
+clone parent
+direction child -1 0 0
+advance child inf 1
+advance parent inf 0.5
+# Parent is at x=1. The periodic plane wins a tie with a collision at 1.
+advance parent 1 2
+periodic parent
+advance parent 0.25 1
+# Child is still at x=-0.5 and crosses the opposite periodic face.
+advance child inf 2
+periodic child
+# Specular reflection at -Y, then the white +Y face with prescribed return direction.
+restart parent 0 0 0 0 -1 0
+advance parent inf 3
+reflect parent
+advance parent inf 5
+direction parent 0 -0.6 0.8
+advance parent inf 4
+# Fresh histories on either side of an exact collision/boundary tie.
+restart parent 0 0 0 1 0 0
+advance parent 1.9999999999999998 3
+restart parent 0 0 0 1 0 0
+advance parent 2.0000000000000004 3

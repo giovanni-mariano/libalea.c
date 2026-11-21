@@ -4,6 +4,9 @@
 #include "interval_internal.h"
 #include "raycast/ray_traversal.h"
 #include "util/compat.h"
+#include "util/load_profile.h"
+#include "util/alea_parallel.h"
+#include "util/alea_alloc.h"
 
 #include "core/alea_regional.h"
 #include "core/alea_universe.h"
@@ -21,15 +24,22 @@
 #include "interval_projections.h"
 /* Cell-root certificates can also eliminate complemented cells wherever
  * their original CSG subtree is shared by another expression. */
-static int prepare_root_bounds(interval_index_t* idx) {
+static int prepare_root_bounds(interval_index_t* idx, const alea_universe_t* child) {
     const alea_system_t* s=idx->sys;
+    size_t n = child ? child->cell_indices.count : s->cells.count;
     idx->guards.bound_ids=calloc(s->nodes.count+1,sizeof(uint32_t));
-    idx->guards.certified=calloc(s->cells.count+1,sizeof(alea_node_bbox_t));
+    idx->guards.certified=calloc(n+1,sizeof(alea_node_bbox_t));
     if(!idx->guards.bound_ids || !idx->guards.certified)return -1;
     size_t count=0;
-    for(size_t i=0;i<s->cells.count;i++) {
+    for(size_t j=0;j<n;j++) {
+        size_t i = child ? child->cell_indices.data[j] : j;
         const alea_cell_entry_t* c=s->cells.data+i;
         uint32_t root=c->root_node_id;
+        if (!child && idx->root_only && c->universe_id != 0) {
+            if (!idx->child_count) continue;
+            const alea_universe_t* u = alea_get_universe(s, c->universe_id);
+            if (!u || !idx->scans[u - s->universes.data].indexed) continue;
+        }
         if(root>=s->nodes.count || (c->lat_type && c->lat_fill) ||
            idx->guards.bound_ids[root] || c->surface_index_count<4)continue;
         interval_box_t current=interval_box_from(alea_node_bbox_get(&s->nodes.data[root].bbox));
@@ -59,7 +69,64 @@ static interval_box_t bounded_cell_domain(const interval_index_t* idx,uint32_t i
     }
     return cell_domain(idx->sys,id,box);
 }
+typedef struct {
+    interval_index_t* index;
+    const alea_universe_t* universe;
+    alea_bbox_t domain;
+} cell_bounds_work_t;
+
+static int prepare_cell_bounds(void* context, size_t worker, size_t begin, size_t end) {
+    (void)worker;
+    const cell_bounds_work_t* work = context;
+    for (size_t j = begin; j < end; ++j) {
+        uint32_t id = (uint32_t)work->universe->cell_indices.data[j];
+        work->index->bounds[id] = bounded_cell_domain(work->index, id, work->domain);
+    }
+    return 0;
+}
+
 #include "interval_domains.h"
+
+/* One reader extends the immutable prefix. Readers that see an older prefix
+ * can finish their lookup by testing the remaining cells in definition order. */
+void interval_extend_child_bounds(const interval_index_t* idx, const alea_universe_t* u,
+                                  size_t covered) {
+    struct universe_scans* scans = &idx->scans[u - idx->sys->universes.data];
+    int idle = 0;
+    if (!atomic_compare_exchange_strong(&scans->building, &idle, 1)) return;
+    if (atomic_load(&scans->covered) != covered || alea_interrupted()) goto done;
+
+    atomic_store(&scans->unfiltered_ns, 0);
+    double start = alea_monotonic_seconds();
+    size_t count = u->cell_indices.count - covered;
+    if (count > CHILD_BOUND_BLOCK_SIZE) count = CHILD_BOUND_BLOCK_SIZE;
+    child_bound_block_t* block = alea_malloc(sizeof(*block) + count * sizeof(*block->cells));
+    if (!block) goto done;
+    block->next = NULL;
+    alea_bbox_t envelope = alea_bbox_empty();
+    for (size_t i = 0; i < count; ++i) {
+        const alea_cell_entry_t* cell = &idx->sys->cells.data[u->cell_indices.data[covered + i]];
+        if (cell->lat_type && cell->lat_fill) {
+            alea_node_bbox_set(&block->cells[i], &idx->domain);
+        } else if (cell->root_node_id < idx->sys->nodes.count) {
+            block->cells[i] = idx->sys->nodes.data[cell->root_node_id].bbox;
+        } else {
+            alea_bbox_t empty = alea_bbox_empty();
+            alea_node_bbox_set(&block->cells[i], &empty);
+        }
+        alea_bbox_t box = alea_node_bbox_get(&block->cells[i]);
+        envelope = alea_bbox_union(&envelope, &box);
+    }
+    alea_node_bbox_set(&block->envelope, &envelope);
+    if (covered) scans->last->next = block;
+    else scans->first = block;
+    scans->last = block;
+    uint64_t ns = (uint64_t)((alea_monotonic_seconds() - start) * 1e9);
+    atomic_fetch_add_explicit(&scans->build_ns, ns, memory_order_relaxed);
+    atomic_store(&scans->covered, covered + count);
+done:
+    atomic_store(&scans->building, 0);
+}
 
 /* Bounds and unspecialized references retain their original subtree. Its
  * physical primitives (including aliases) can still supply a crossing. */
@@ -173,31 +240,33 @@ static int spatial_leaf(interval_index_t* idx, alea_bbox_t box, uint32_t node, c
         test=fold_views(idx,test,b,views,&extra);
         if(idx->guards.failed)return -1;
         if(test==GUARD_EMPTY)continue;
-        for (size_t k=0;k<cell->surface_index_count;k++) {
-            uint32_t si=cell->surface_indices[k];
-            uint32_t prim=idx->sys->surfaces.data[si].primitive_id;
-            if (idx->surfaces[prim].kind && sign_in_views(&idx->surfaces[prim],b,views)) continue;
-            if (alea_vec_push(&idx->cards,si,uint32_t)) return -1;
-        }
-        patch.count=(uint32_t)(idx->cards.count-patch.first);
-        if(++idx->active_epoch==0) {
-            memset(idx->active_shapes,0,idx->sys->primitives.count*sizeof(*idx->active_shapes));
-            idx->active_epoch=1;
-        }
-        unsigned visits=4096;
-        bool complete=mark_active_shapes(idx,test,&visits);
-        uint32_t active=0;
-        for(uint32_t j=0;j<patch.count;j++) {
-            uint32_t* cards=idx->cards.data+patch.first;
-            uint32_t si=cards[j];
-            struct interval_card info=idx->card_info[si];
-            if(!complete || idx->active_shapes[info.primitive]==idx->active_epoch) {
-                cards[j]=cards[active];cards[active++]=si;
+        uint32_t active = 0;
+        if (!idx->points_only) {
+            for (size_t k=0;k<cell->surface_index_count;k++) {
+                uint32_t si=cell->surface_indices[k];
+                uint32_t prim=idx->sys->surfaces.data[si].primitive_id;
+                if (idx->surfaces[prim].kind && sign_in_views(&idx->surfaces[prim],b,views)) continue;
+                if (alea_vec_push(&idx->cards,si,uint32_t)) return -1;
             }
-        }
-        if (active==patch.count && patch.count==cell->surface_index_count) {
-            idx->cards.count=patch.first;
-            patch.count=UINT32_MAX;
+            patch.count=(uint32_t)(idx->cards.count-patch.first);
+            if(++idx->active_epoch==0) {
+                memset(idx->active_shapes,0,idx->sys->primitives.count*sizeof(*idx->active_shapes));
+                idx->active_epoch=1;
+            }
+            unsigned visits=4096;
+            bool complete=mark_active_shapes(idx,test,&visits);
+            for(uint32_t j=0;j<patch.count;j++) {
+                uint32_t* cards=idx->cards.data+patch.first;
+                uint32_t si=cards[j];
+                struct interval_card info=idx->card_info[si];
+                if(!complete || idx->active_shapes[info.primitive]==idx->active_epoch) {
+                    cards[j]=cards[active];cards[active++]=si;
+                }
+            }
+            if (active==patch.count && patch.count==cell->surface_index_count) {
+                idx->cards.count=patch.first;
+                patch.count=UINT32_MAX;
+            }
         }
         unsigned lane=(idx->patches.count-start)%BOUND_LANES;
         if(lane==0){memset(axes,0,sizeof(axes));mask=0;}
@@ -283,6 +352,14 @@ static uint32_t place_box(interval_index_t* idx,uint32_t code,uint32_t* ids) {
 }
 static uint32_t runtime_operand(interval_index_t* idx,uint32_t code,uint32_t* boxes) {
     if(code<2 || code&(GUARD_BRANCH|GUARD_REF|GUARD_BOX))return place_box(idx,code,boxes);
+    if (idx->root_only) {
+        const alea_primitive_entry_t* p = &idx->sys->primitives.data[(code - 2) >> 1];
+        if (p->payload_index > (QUERY_OPERAND >> 1)) return code;
+        uint32_t operand = 2 * p->payload_index + (code & 1);
+        if (p->type == ALEA_PRIMITIVE_PLANE) return QUERY_PLANE | operand;
+        if (p->type == ALEA_PRIMITIVE_QUADRIC) return QUERY_QUADRIC | operand;
+        return code;
+    }
     uint32_t id=(code-2)>>1,shape=idx->shape_id[id],sense=code&1;
     if(shape&CARD_PLANE)return QUERY_PLANE|((shape&CARD_ID)*2+sense);
     if(shape&CARD_QUADRIC)return QUERY_QUADRIC|((shape&CARD_ID)*2+sense);
@@ -506,12 +583,14 @@ static int pack_shapes(interval_index_t* idx) {
             idx->shape_id[i]=CARD_QUADRIC|(uint32_t)quadrics++;
         }else idx->shape_id[i]=(uint32_t)i;
     }
-    if (alea_vec_reserve(&idx->surface_cards, sys->surfaces.count, query_card_t)) return -1;
-    for (size_t i=0; i<sys->surfaces.count; ++i) {
-        struct interval_card card = idx->card_info[i];
-        idx->surface_cards.data[i] = (query_card_t){idx->shape_id[card.primitive], card.number};
+    if (!idx->points_only) {
+        if (alea_vec_reserve(&idx->surface_cards, sys->surfaces.count, query_card_t)) return -1;
+        for (size_t i=0; i<sys->surfaces.count; ++i) {
+            struct interval_card card = idx->card_info[i];
+            idx->surface_cards.data[i] = (query_card_t){idx->shape_id[card.primitive], card.number};
+        }
+        idx->surface_cards.count = sys->surfaces.count;
     }
-    idx->surface_cards.count = sys->surfaces.count;
     for (size_t i=0; i<sys->cells.count; ++i) {
         const alea_cell_entry_t* c=sys->cells.data+i;
         if (c->surface_index_count>UINT32_MAX) return -1;
@@ -538,7 +617,7 @@ static int finish_region_programs(interval_index_t* idx) {
     idx->guards.table=NULL;
     idx->guards.capacity=0;
     if(idx->guards.failed || compile_decisions(idx) || compact_pairs(idx))return -1;
-    if (finish_patch_cards(idx)) return -1;
+    if (!idx->points_only && finish_patch_cards(idx)) return -1;
     alea_vec_free(&idx->cards);
     idx->finished_patches = idx->patches.count;
     idx->finished_items = idx->point_items.count;
@@ -565,6 +644,124 @@ static int finish_index(interval_index_t* idx) {
     return 0;
 }
 
+/* Select a required union from a product of constraints. Its alternatives
+ * cover the cell; the other constraints are retained in the inherited box. */
+static uint32_t render_union(const alea_system_t* sys, uint32_t id, unsigned depth, unsigned* size) {
+    const alea_node_t* n = sys->nodes.data + id;
+    if (ALEA_GET_OPERATION(n) == ALEA_OP_UNION) {
+        *size = 1;
+        while (ALEA_GET_OPERATION(n) == ALEA_OP_UNION && *size < 512) {
+            ++*size;
+            n = sys->nodes.data + n->operation.left;
+        }
+        return id;
+    }
+    if (!depth || ALEA_GET_OPERATION(n) != ALEA_OP_INTERSECTION) return UINT32_MAX;
+    unsigned left_size = 0, right_size = 0;
+    uint32_t left = render_union(sys, n->operation.left, depth-1, &left_size);
+    uint32_t right = render_union(sys, n->operation.right, depth-1, &right_size);
+    *size = left_size > right_size ? left_size : right_size;
+    return left_size > right_size ? left : right;
+}
+
+static bool add_render_bounds(interval_index_t* idx, uint32_t root, uint32_t id, interval_box_t bounds,
+                              unsigned depth, unsigned* remaining) {
+    for (;;) {
+        if (box_empty(bounds)) return true;
+        alea_bbox_t box = hierarchy_box(bounds);
+        if (alea_bbox_contains(&idx->domain, &box)) {
+            idx->render_core = alea_bbox_union(&idx->render_core, &box);
+            return true;
+        }
+        unsigned size = 0;
+        uint32_t split = *remaining && depth < 32 ? render_union(idx->sys, id, 12, &size) : UINT32_MAX;
+        if (split == UINT32_MAX) {
+            alea_bbox_t lp;
+            if (ALEA_GET_OPERATION(idx->sys->nodes.data + id) == ALEA_OP_INTERSECTION &&
+                !alea_tighten_bbox_mixed_constraints(idx->sys, id, &lp)) {
+                box = alea_bbox_intersection(&box, &lp);
+                if (box_empty(interval_box_from(box))) return true;
+                if (alea_bbox_contains(&idx->domain, &box)) {
+                    idx->render_core = alea_bbox_union(&idx->render_core, &box);
+                    return true;
+                }
+            }
+            render_bound_t stored = {.branch=id, .cell_root=root};
+            alea_node_bbox_set(&stored.box, &box);
+            return !alea_vec_push(&idx->render_boxes, stored, render_bound_t);
+        }
+        --*remaining;
+        const alea_node_t* n = idx->sys->nodes.data + split;
+        unsigned budget = 256;
+        interval_box_t right = contract_cell(idx->sys, n->operation.right, bounds, false, 0, &budget);
+        if (!add_render_bounds(idx, root, n->operation.right, right, depth+1, remaining)) return false;
+        id = n->operation.left;
+        /* Continue down a left-deep union with its original enclosing box. */
+        if (ALEA_GET_OPERATION(idx->sys->nodes.data + id) != ALEA_OP_UNION) {
+            budget = 256;
+            bounds = contract_cell(idx->sys, id, bounds, false, 0, &budget);
+        }
+    }
+}
+
+/* These cells take precedence over every potentially visible world cell.
+ * A filled or lattice cell can contain material even when its own ID is void. */
+static void prepare_render_void_prefix(interval_index_t* idx, const alea_universe_t* world) {
+    idx->render_void_prefix_count = 0;
+    idx->render_exterior_void_root = UINT32_MAX;
+    for (size_t i = 0; i < world->cell_indices.count; ++i) {
+        const alea_cell_entry_t* cell = idx->sys->cells.data + world->cell_indices.data[i];
+        if (cell->material_id || cell->lat_type || alea_cell_entry_is_container(cell) ||
+            cell->root_node_id >= idx->sys->nodes.count) break;
+        ++idx->render_void_prefix_count;
+        const alea_node_t* root = idx->sys->nodes.data + cell->root_node_id;
+        if (ALEA_GET_OPERATION(root) != ALEA_OP_PRIMITIVE ||
+            root->primitive.prim_type != ALEA_PRIMITIVE_SPHERE) continue;
+        bool outside = (root->primitive.sense > 0) != (root->primitive.inverted != 0);
+        const alea_sphere_data_t* s = alea_primitive_payload_const(idx->sys, root->primitive.primitive_id);
+        if (outside && s && isfinite(s->center_x) && isfinite(s->center_y) &&
+            isfinite(s->center_z) && isfinite(s->radius * s->radius))
+            idx->render_exterior_void_root = cell->root_node_id;
+    }
+}
+
+/* A world cell can contain visible material directly or through a fill. A
+ * lattice can extend past its card's CSG bounds, so leave it to the walker. */
+int alea_regional_prepare_render_bounds(interval_index_t* idx) {
+    /* Called by the exclusive render consumer, before dispatching tile workers. */
+    if (idx->render_bounds_attempted || !idx->domains) return 0;
+    const alea_universe_t* world = alea_get_universe(idx->sys, 0);
+    if (!world) return 0;
+    idx->render_core = alea_bbox_empty();
+    prepare_render_void_prefix(idx, world);
+    for (size_t j = 0; j < world->cell_indices.count; ++j) {
+        uint32_t id = world->cell_indices.data[j];
+        const alea_cell_entry_t* cell = idx->sys->cells.data + id;
+        if (!cell->material_id && !alea_cell_entry_is_container(cell)) continue;
+        if (alea_interrupted()) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Rendering interrupted");
+            goto fail;
+        }
+        if (cell->lat_type || cell->root_node_id >= idx->sys->nodes.count) {
+            alea_vec_free(&idx->render_boxes);
+            idx->render_bounds_attempted = true;
+            return 0;
+        }
+        alea_bbox_t raw = alea_node_bbox_get(&idx->sys->nodes.data[cell->root_node_id].bbox);
+        interval_box_t bounds = interval_box_from(raw);
+        if (!alea_bbox_contains(&idx->domain, &raw))
+            bounds = cell_domain(idx->sys, id, raw);
+        unsigned remaining = 4096;
+        if (!add_render_bounds(idx, cell->root_node_id, cell->root_node_id, bounds, 0, &remaining)) goto fail;
+    }
+    idx->render_bounds_attempted = true;
+    idx->render_bounds_ready = true;
+    return 0;
+fail:
+    alea_vec_free(&idx->render_boxes);
+    return -1;
+}
+
 /* Keep the inner resolution when a ray enters from outside the requested
  * box. Six disjoint slabs extend the world index by its width on each side. */
 static int build_world_exterior(interval_index_t* idx,const alea_universe_t* world) {
@@ -588,7 +785,8 @@ static int build_world_exterior(interval_index_t* idx,const alea_universe_t* wor
                 idx->bounds[id]=bounded_cell_domain(idx,id,region->box);
                 if(!box_empty(idx->bounds[id]))ids[count++]=id;
             }
-            if(build_region(idx,region->box,ids,count,0,1024+count*16,&region->root)){
+            size_t budget = idx->points_only ? 64 + count * 4 : 1024 + count * 16;
+            if(build_region(idx,region->box,ids,count,0,budget,&region->root)){
                 free(ids);return -1;
             }
         }
@@ -656,6 +854,31 @@ static void free_worker(regional_worker_t* worker) {
     alea_regional_free_scratch(worker->levels);
 }
 
+static int init_worker(regional_worker_t* w, const interval_index_t* idx) {
+    size_t roots = 1;
+    while (roots < idx->sys->primitives.count && roots < 4096) roots *= 2;
+    *w = (regional_worker_t){.index = idx, .root_mask = roots - 1};
+    w->roots = calloc(roots, sizeof(*w->roots));
+    if (idx->domains)
+        w->visited = calloc(idx->sys->cells.count + 1, sizeof(*w->visited));
+    w->plane_gates = calloc(idx->plane_count + 1, sizeof(*w->plane_gates));
+    w->quadric_gates = calloc(idx->quadric_count + 1, sizeof(*w->quadric_gates));
+    return w->roots && (!idx->domains || w->visited) && w->plane_gates && w->quadric_gates ? 0 : -1;
+}
+
+regional_worker_t* alea_regional_worker_create(const interval_index_t* idx) {
+    regional_worker_t* w = malloc(sizeof(*w));
+    if (w && init_worker(w, idx) == 0) return w;
+    alea_regional_worker_destroy(w);
+    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating regional batch worker");
+    return NULL;
+}
+
+void alea_regional_worker_destroy(regional_worker_t* w) {
+    if (w) free_worker(w);
+    free(w);
+}
+
 int alea_regional_reserve_workers(interval_index_t* idx, size_t count) {
     if (count <= idx->worker_count) return 0;
     if (count > SIZE_MAX / sizeof(*idx->workers)) {
@@ -665,17 +888,8 @@ int alea_regional_reserve_workers(interval_index_t* idx, size_t count) {
     regional_worker_t* workers = realloc(idx->workers, count * sizeof(*workers));
     if (!workers) goto fail;
     idx->workers = workers;
-    size_t roots = 1;
-    while (roots < idx->sys->primitives.count && roots < 4096) roots *= 2;
     for (size_t i = idx->worker_count; i < count; ++i) {
-        regional_worker_t* w = &workers[i];
-        *w = (regional_worker_t){.index = idx, .root_mask = roots - 1};
-        w->roots = calloc(roots, sizeof(*w->roots));
-        if (idx->domains)
-            w->visited = calloc(idx->sys->cells.count + 1, sizeof(*w->visited));
-        w->plane_gates = calloc(idx->plane_count + 1, sizeof(*w->plane_gates));
-        w->quadric_gates = calloc(idx->quadric_count + 1, sizeof(*w->quadric_gates));
-        if (!w->roots || (idx->domains && !w->visited) || !w->plane_gates || !w->quadric_gates) {
+        if (init_worker(&workers[i], idx)) {
             for (size_t j = idx->worker_count; j <= i; ++j) free_worker(&workers[j]);
             goto fail;
         }
@@ -692,7 +906,7 @@ regional_worker_t* alea_regional_worker(interval_index_t* idx, size_t slot) {
 }
 
 void alea_prepared_queries_destroy(interval_index_t* idx) {
-    if (!idx) return;
+    if (!idx || atomic_fetch_sub(&idx->references, 1) != 1) return;
     if (idx->detach_mapping) idx->detach_mapping(idx);
     free(idx->box_ids);
     alea_vec_free(&idx->residual);
@@ -700,6 +914,19 @@ void alea_prepared_queries_destroy(interval_index_t* idx) {
     free(idx->proof_table);free(idx->primitive_proofs);
     alea_vec_free(&idx->tiles);alea_vec_free(&idx->point_items);
     free(idx->point_grids);alea_vec_free(&idx->point_nodes);
+    for (size_t i = 0; i < idx->scan_count; ++i) {
+        free(idx->scans[i].bounds);
+        alea_prepared_queries_destroy(idx->scans[i].region);
+        child_bound_block_t* block = idx->scans[i].first;
+        while (block) {
+            child_bound_block_t* next = block->next;
+            free(block);
+            block = next;
+        }
+    }
+    alea_vec_free(&idx->render_boxes);
+    free(idx->scans);
+    alea_vec_free(&idx->exterior_point_cells);
     free(idx->centers);free(idx->order);
     for (size_t i = 0; i < idx->worker_count; ++i) free_worker(&idx->workers[i]);
     free(idx->workers);
@@ -737,6 +964,18 @@ bool interval_index_is_regional(const interval_index_t* idx) {
 size_t interval_index_bytes(const interval_index_t* idx) {
     size_t cells = idx->sys->cells.count + 1;
     size_t bytes = sizeof(*idx) + (idx->sys->universes.count+1)*sizeof(*idx->universe_roots);
+    if (idx->child_mode == CHILD_POINTS_ADAPTIVE) {
+        for (size_t i = 0; i < idx->scan_count; ++i) {
+            size_t cells = atomic_load(&idx->scans[i].covered);
+            size_t blocks = cells / CHILD_BOUND_BLOCK_SIZE + (cells % CHILD_BOUND_BLOCK_SIZE != 0);
+            bytes += cells * sizeof(alea_node_bbox_t) + blocks * sizeof(child_bound_block_t);
+            const interval_index_t* child = published_child_region(&idx->scans[i]);
+            if (child) bytes += interval_index_bytes(child);
+        }
+    }
+    bytes += idx->child_bounds_count * sizeof(alea_node_bbox_t);
+    bytes += idx->exterior_point_cells.capacity * sizeof(*idx->exterior_point_cells.data);
+    if (idx->scans) bytes += idx->sys->universes.count * sizeof(*idx->scans);
     for (size_t i = 0; i < idx->worker_count; ++i) {
         const regional_worker_t* w = &idx->workers[i];
         bytes += sizeof(*w) + (w->root_mask + 1) * sizeof(*w->roots)
@@ -746,11 +985,14 @@ size_t interval_index_bytes(const interval_index_t* idx) {
     bytes+=idx->tiles.capacity*sizeof(point_tiles_t)+idx->point_items.capacity*sizeof(point_item_t);
     if(idx->point_grids)bytes+=(idx->sys->universes.count+1)*sizeof(*idx->point_grids)
         +idx->point_nodes.capacity*sizeof(*idx->point_nodes.data);
+    bytes += idx->render_boxes.capacity * sizeof(render_bound_t);
     if(idx->domains)bytes+=(idx->sys->universes.count+1)*sizeof(*idx->domains);
     bytes+=idx->extra_axes.capacity*sizeof(packet_axis_t);
     bytes+=idx->decisions.capacity*sizeof(*idx->decisions.data);
-    bytes+=(idx->plane_count+1)*sizeof(*idx->planes)+(idx->quadric_count+1)*sizeof(*idx->quadrics)+
-        cells*sizeof(*idx->cell_cards)+idx->boxes.capacity*sizeof(*idx->boxes.data)+
+    if (idx->planes) bytes+=(idx->plane_count+1)*sizeof(*idx->planes);
+    if (idx->quadrics) bytes+=(idx->quadric_count+1)*sizeof(*idx->quadrics);
+    if (idx->cell_cards) bytes+=cells*sizeof(*idx->cell_cards);
+    bytes+=idx->boxes.capacity*sizeof(*idx->boxes.data)+
         idx->patch_cards.capacity*sizeof(uint32_t)+idx->surface_cards.capacity*sizeof(query_card_t)+idx->wide.capacity*sizeof(query_decision_t);
     return bytes+idx->packets.capacity*sizeof(*idx->packets.data)+idx->patches.capacity*sizeof(*idx->patches.data)+
         idx->cards.capacity*sizeof(*idx->cards.data)+
@@ -758,22 +1000,87 @@ size_t interval_index_bytes(const interval_index_t* idx) {
         idx->guards.pairs.capacity*sizeof(*idx->guards.pairs.data);
 }
 
-interval_index_t* interval_index_build(alea_system_t* sys, const alea_bbox_t* domain, bool selective) {
-    interval_index_t* idx = calloc(1, sizeof(*idx));
-    if (!idx) return NULL;
+/* Outside the indexed world box, only lattices and cells whose original
+ * root bounds cross the box can own a point. Preserve definition order. */
+static int collect_exterior_point_cells(interval_index_t* idx, const alea_universe_t* world) {
+    for (size_t i = 0; i < world->cell_indices.count; ++i) {
+        size_t id = world->cell_indices.data[i];
+        const alea_cell_entry_t* cell = &idx->sys->cells.data[id];
+        if (!(cell->lat_type && cell->lat_fill)) {
+            if (cell->root_node_id >= idx->sys->nodes.count) continue;
+            alea_bbox_t box = alea_node_bbox_get(&idx->sys->nodes.data[cell->root_node_id].bbox);
+            if (alea_bbox_contains(&idx->domain, &box)) continue;
+        }
+        if (alea_vec_push(&idx->exterior_point_cells, id, size_t)) return -1;
+    }
+    return 0;
+}
+
+typedef enum {
+    INDEX_POINTS_AND_RAYS,
+    INDEX_ALL_UNIVERSE_POINTS,
+    INDEX_ROOT_POINTS,
+    INDEX_CHILD_POINTS
+} index_scope_t;
+
+static interval_index_t* build_index(alea_system_t* sys, const alea_bbox_t* domain,
+                                     bool selective, index_scope_t scope,
+                                     const interval_point_children_t* children) {
+    const bool points_only = scope != INDEX_POINTS_AND_RAYS;
+    const alea_universe_t* only_child = scope == INDEX_CHILD_POINTS
+        ? alea_get_universe(sys, children->ids[0]) : NULL;
+    const bool root_only = scope == INDEX_ROOT_POINTS || scope == INDEX_CHILD_POINTS;
+    interval_index_t* idx = alea_calloc(1, sizeof(*idx));
+    if (!idx) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating regional index");
+        return NULL;
+    }
+    double stage = alea_load_profile_start();
+    idx->points_only = points_only;
+    idx->root_only = root_only;
+    atomic_init(&idx->references, 1);
     idx->sys = sys;
     idx->geometry_generation = alea_system_geometry_generation(sys);
     idx->material_generation = alea_system_material_generation(sys);
     idx->selective = selective;
-    idx->card_info = calloc(sys->surfaces.count + 1, sizeof(*idx->card_info));
+    if (root_only && sys->universes.count) {
+        idx->scans = calloc(sys->universes.count, sizeof(*idx->scans));
+        if (!idx->scans) goto fail;
+        idx->scan_count = sys->universes.count;
+        const char* timing = getenv("ALEA_PROFILE_CHILD_POINTS");
+        idx->time_child_points = timing && *timing && strcmp(timing, "0");
+        for (size_t i = 0; i < idx->scan_count; ++i) {
+            atomic_init(&idx->scans[i].local_ns, 0);
+            atomic_init(&idx->scans[i].unfiltered_ns, 0);
+            atomic_init(&idx->scans[i].build_ns, 0);
+            atomic_init(&idx->scans[i].covered, 0);
+            atomic_init(&idx->scans[i].building, 0);
+            atomic_init(&idx->scans[i].region_state, CHILD_REGION_ABSENT);
+            atomic_init(&idx->scans[i].tests, 0);
+            atomic_init(&idx->scans[i].visits, 0);
+        }
+        if (children) {
+            idx->child_count = children->count;
+            idx->child_mode = children->mode;
+            for (size_t i = 0; i < children->count; ++i) {
+                const alea_universe_t* u = alea_get_universe(sys, children->ids[i]);
+                idx->scans[u - sys->universes.data].indexed = true;
+            }
+        }
+    }
+    if (!points_only) {
+        idx->card_info = calloc(sys->surfaces.count + 1, sizeof(*idx->card_info));
+        if (!idx->card_info) goto fail;
+    }
     idx->universe_roots = calloc(sys->universes.count + 1, sizeof(uint32_t));
-    if (!idx->card_info || !idx->universe_roots) goto fail;
-    for (size_t i=0;i<sys->surfaces.count;i++) {
+    if (!idx->universe_roots) goto fail;
+    /* A promoted child shares the model already validated by its parent. */
+    for (size_t i=0;!only_child && i<sys->surfaces.count;i++) {
         const alea_surface_entry_t* s=&sys->surfaces.data[i];
         if(s->primitive_id>=sys->primitives.count)goto fail;
-        idx->card_info[i]=(struct interval_card){s->primitive_id,s->mc_surface_id};
+        if (!points_only) idx->card_info[i]=(struct interval_card){s->primitive_id,s->mc_surface_id};
     }
-    for(size_t i=0;i<sys->cells.count;i++) {
+    for(size_t i=0;!only_child && i<sys->cells.count;i++) {
         const alea_cell_entry_t* c=sys->cells.data+i;
         for(size_t j=0;j<c->surface_index_count;j++)
             if(c->surface_indices[j]>=sys->surfaces.count)goto fail;
@@ -788,33 +1095,69 @@ interval_index_t* interval_index_build(alea_system_t* sys, const alea_bbox_t* do
         idx->proof_table=calloc(65536,sizeof(*idx->proof_table));
         idx->primitive_proofs=calloc(sys->primitives.count+1,sizeof(*idx->primitive_proofs));
         if(!idx->proof_table || !idx->primitive_proofs)goto fail;
-        idx->active_shapes=calloc(sys->primitives.count+1,sizeof(*idx->active_shapes));
-        if(!idx->active_shapes)goto fail;
+        if (!points_only) {
+            idx->active_shapes=calloc(sys->primitives.count+1,sizeof(*idx->active_shapes));
+            if(!idx->active_shapes)goto fail;
+        }
         idx->domain = *domain;
         idx->domains=calloc(sys->universes.count+1,sizeof(*idx->domains));
-        if(!idx->domains || prepare_root_bounds(idx) || choose_domains(idx))goto fail;
+        if(!idx->domains || prepare_root_bounds(idx, only_child))goto fail;
+        if (root_only) {
+            /* Use the same finite numeric box in each indexed local frame.
+             * Points outside it retain the ordered local scan. */
+            for (size_t i = 0; i < sys->universes.count; ++i)
+                idx->domains[i] = *domain;
+        } else if (choose_domains(idx)) goto fail;
         idx->proof_margin=2048*DBL_EPSILON*(1+fabs(domain->min_x)+fabs(domain->max_x)+
             fabs(domain->min_y)+fabs(domain->max_y)+fabs(domain->min_z)+fabs(domain->max_z));
         idx->surfaces=calloc(sys->primitives.count+1,sizeof(guard_surface_t));
         if (!idx->surfaces) goto fail;
-        for (size_t i=0;i<sys->primitives.count;i++) guard_surface_init(&idx->surfaces[i],sys,(uint32_t)i);
+        for (size_t i=0;i<sys->primitives.count;i++) guard_surface_init(&idx->surfaces[i],sys,(uint32_t)i,true);
         idx->bounds = calloc(sys->cells.count + 1, sizeof(interval_box_t));
         if (!idx->bounds) goto fail;
     }
-    if (pack_shapes(idx)) goto fail;
+    alea_load_profile_end("regional_setup_bounds", stage);
+    stage = alea_load_profile_start();
+    if (!root_only && pack_shapes(idx)) goto fail;
+    alea_load_profile_end("regional_pack", stage);
+    stage = alea_load_profile_start();
     idx->box_ids=calloc(sys->nodes.count+1,sizeof(*idx->box_ids));
     if (!idx->box_ids) goto fail;
     for (size_t i = 0; i < sys->universes.count; i++) {
         idx->universe_roots[i] = UINT32_MAX;
         const alea_universe_t* u = &sys->universes.data[i];
         size_t n = u->cell_indices.count;
-        if (!domain || !n) continue;
+        if (only_child && u != only_child) continue;
+        if (!domain || !n || (root_only && u->universe_id != 0 && !idx->scans[i].indexed)) continue;
+        double region_start = root_only && u->universe_id != 0 ? alea_load_profile_start() : -1;
+        cell_bounds_work_t work = {idx, u, idx->domains[i]};
+        double bounds_start = root_only ? alea_load_profile_start() : -1;
+        if (root_only && n >= 128) {
+            if (alea_parallel_for_independent(n, 32, prepare_cell_bounds, &work) != ALEA_PARALLEL_OK) {
+                goto fail;
+            }
+        } else {
+            prepare_cell_bounds(&work, 0, 0, n);
+        }
+        if (root_only) alea_load_profile_end("regional_cell_bounds", bounds_start);
+        if (root_only && u->universe_id != 0 && idx->child_mode == CHILD_POINTS_BOUNDS) {
+            alea_node_bbox_t* bounds = calloc(n, sizeof(*bounds));
+            if (!bounds) goto fail;
+            idx->scans[i].bounds = bounds;
+            idx->child_bounds_count += n;
+            for (size_t j = 0; j < n; ++j) {
+                uint32_t id = (uint32_t)u->cell_indices.data[j];
+                alea_bbox_t box = hierarchy_box(idx->bounds[id]);
+                alea_node_bbox_set(&bounds[j], &box);
+            }
+            alea_load_profile_end("regional_point_child", region_start);
+            continue;
+        }
         uint32_t* ids = malloc(n * sizeof(*ids));
         if (!ids) goto fail;
         size_t count = 0;
         for (size_t j = 0; j < n; j++) {
             uint32_t id = (uint32_t)u->cell_indices.data[j];
-            idx->bounds[id] = bounded_cell_domain(idx,id,idx->domains[i]);
             if (!box_empty(idx->bounds[id])) ids[count++] = id;
         }
         /* Every global query starts in universe zero. Dense collections of
@@ -832,13 +1175,33 @@ interval_index_t* interval_index_build(alea_system_t* sys, const alea_bbox_t* do
             budget = 1024 + count * 100;
             idx->leaf_size = 8;
         }
+        if (points_only) {
+            /* Every lookup pays for the world search. Spatial duplication in
+             * child universes only benefits queries that descend into them. */
+            bool world = u->universe_id == 0;
+            bool fine_root = world && !root_only;
+            budget = 64 + count * (fine_root ? 32 : 4);
+            idx->leaf_size = fine_root ? 12 : 24;
+        }
+        double subdivision_start = region_start >= 0 ? alea_monotonic_seconds() : -1;
         int rc = build_region(idx, idx->domains[i], ids, count, 0, budget, &idx->universe_roots[i]);
+        alea_load_profile_end("regional_child_subdivision", subdivision_start);
         free(ids);
+        double programs_start = region_start >= 0 ? alea_monotonic_seconds() : -1;
         if (rc || finish_region_programs(idx)) goto fail;
+        alea_load_profile_end("regional_child_finish_programs", programs_start);
+        alea_load_profile_end("regional_point_child", region_start);
     }
+    alea_load_profile_end("regional_subdivide_compile", stage);
+    stage = alea_load_profile_start();
     const alea_universe_t* world=alea_get_universe(sys,0);
-    if(domain && world && idx->universe_roots[world-sys->universes.data]!=UINT32_MAX &&
-       (build_world_exterior(idx,world) || finish_region_programs(idx)))goto fail;
+    if (domain && world && idx->universe_roots[world - sys->universes.data] != UINT32_MAX) {
+        if (root_only) {
+            if (collect_exterior_point_cells(idx, world)) goto fail;
+        } else if (build_world_exterior(idx, world) || finish_region_programs(idx)) goto fail;
+    }
+    alea_load_profile_end("regional_exterior", stage);
+    stage = alea_load_profile_start();
     free(idx->bounds);idx->bounds=NULL;
     free(idx->surfaces);idx->surfaces=NULL;
     free(idx->guards.table);idx->guards.table=NULL;
@@ -848,9 +1211,240 @@ interval_index_t* interval_index_build(alea_system_t* sys, const alea_bbox_t* do
     free(idx->guards.bound_ids);idx->guards.bound_ids=NULL;
     free(idx->guards.certified);idx->guards.certified=NULL;
     if(finish_index(idx) || (domain && build_point_starts(idx)))goto fail;
-    if (alea_regional_reserve_workers(idx, 1)) goto fail;
+    if (!points_only && alea_regional_reserve_workers(idx, 1)) goto fail;
+    alea_load_profile_end("regional_finalize", stage);
     return idx;
 fail:
     alea_prepared_queries_destroy(idx);
     return NULL;
+}
+
+interval_index_t* interval_index_build(alea_system_t* sys, const alea_bbox_t* domain, bool selective) {
+    return build_index(sys, domain, selective, INDEX_POINTS_AND_RAYS, NULL);
+}
+
+static bool selected_world_domain(alea_system_t* sys, alea_bbox_t* box) {
+    const alea_universe_t* world = alea_get_universe(sys, 0);
+    const alea_bbox_t infinite = alea_bbox_infinite();
+    *box = alea_bbox_empty();
+    for (size_t i = 0; world && i < world->cell_indices.count; ++i) {
+        const alea_cell_entry_t* cell = &sys->cells.data[world->cell_indices.data[i]];
+        if (cell->root_node_id >= sys->nodes.count) continue;
+        alea_bbox_t b = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        if (alea_bbox_is_valid(&b) && b.min_x > infinite.min_x && b.max_x < infinite.max_x &&
+            b.min_y > infinite.min_y && b.max_y < infinite.max_y &&
+            b.min_z > infinite.min_z && b.max_z < infinite.max_z)
+            *box = alea_bbox_union(box, &b);
+    }
+    return box->min_x < box->max_x && box->min_y < box->max_y && box->min_z < box->max_z;
+}
+
+static bool same_domain(alea_bbox_t a, alea_bbox_t b) {
+    return a.min_x == b.min_x && a.max_x == b.max_x &&
+           a.min_y == b.min_y && a.max_y == b.max_y &&
+           a.min_z == b.min_z && a.max_z == b.max_z;
+}
+
+int alea_prepare_ray_acceleration(alea_system_t* sys, const alea_bbox_t* requested) {
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL)) return -1;
+    alea_bbox_t domain;
+    if (sys->ray_batch_index && (!requested || same_domain(*requested, sys->ray_batch_index->domain)))
+        return 0;
+    if (!requested && !selected_world_domain(sys, &domain)) return 0;
+    interval_index_t* next = alea_prepared_queries_create(sys, requested ? requested : &domain);
+    if (!next) return -1;
+    int rc = alea_set_ray_batch_accelerator(sys, next);
+    alea_prepared_queries_destroy(next);
+    return rc;
+}
+
+static int prepare_selected_points(alea_system_t* sys, const alea_bbox_t* requested,
+                                   bool root_only, const interval_point_children_t* children, bool automatic) {
+    interval_child_mode_t mode = children ? children->mode : CHILD_POINTS_BOUNDS;
+    if (children && children->count && !children->ids) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Missing point child universe IDs");
+        return -1;
+    }
+    if (requested) {
+        interval_box_t bounds = interval_box_from(*requested);
+        for (unsigned i = 0; i < 3; ++i) {
+            if (!(bounds.lo[i] < bounds.hi[i]) || !isfinite(bounds.hi[i] - bounds.lo[i])) {
+                alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Invalid selected query domain");
+                return -1;
+            }
+        }
+    }
+    alea_clear_error_detail();
+    unsigned prerequisites = root_only
+        ? ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES | ALEA_CACHE_FILL_MATRICES
+        : ALEA_CACHE_HIER_SPATIAL;
+    if (alea_system_prepare_query_caches(sys, prerequisites)) return -1;
+    while (atomic_flag_test_and_set(&sys->query_cache_build_lock)) {
+        if (alea_interrupted()) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Selected query preparation interrupted");
+            return -1;
+        }
+    }
+    /* Explicit publication can supersede the automatic index. Keep the old
+     * allocation alive for existing readers until the next exclusive clear. */
+    if (!sys->selected_index && sys->automatic_point_index && root_only && children &&
+        children->mode == CHILD_POINTS_ADAPTIVE && !children->count && !automatic) {
+        /* Explicit preparation claims the same allocation and scope. */
+        atomic_fetch_add(&sys->automatic_point_index->references, 1);
+        sys->selected_index = sys->automatic_point_index;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_SELECTED_POINTS);
+    }
+    if (automatic && (sys->automatic_point_index || sys->selected_index)) {
+        atomic_flag_clear(&sys->query_cache_build_lock);
+        return 0;
+    }
+    int rc = 0;
+    double start = alea_monotonic_seconds();
+    alea_bbox_t domain;
+    size_t child_count = children ? children->count : 0;
+    bool same_children = !sys->selected_index || sys->selected_index->child_count == child_count;
+    for (size_t i = 0; i < child_count; ++i) {
+        int id = children->ids[i];
+        const alea_universe_t* u = alea_get_universe(sys, id);
+        if (id <= 0 || !u || (i && id <= children->ids[i - 1])) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Expected distinct existing child universe IDs in increasing order (got %d)", id);
+            atomic_flag_clear(&sys->query_cache_build_lock);
+            return -1;
+        }
+        if (sys->selected_index && (!sys->selected_index->scans ||
+            !sys->selected_index->scans[u - sys->universes.data].indexed)) same_children = false;
+    }
+    if (sys->selected_index) {
+        if (!same_children || mode != sys->selected_index->child_mode ||
+            root_only != sys->selected_index->root_only ||
+            (requested && !same_domain(*requested, sys->selected_index->domain))) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Clear the selected query index before changing its domain or scope");
+            rc = -1;
+        }
+    } else if (requested || selected_world_domain(sys, &domain)) {
+        interval_index_t* index = build_index(sys, requested ? requested : &domain, true,
+            root_only ? INDEX_ROOT_POINTS : INDEX_ALL_UNIVERSE_POINTS, children);
+        if (!index || alea_interrupted()) {
+            alea_prepared_queries_destroy(index);
+            if (alea_interrupted())
+                alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Selected query preparation interrupted");
+            else if (alea_get_last_error() == ALEA_OK)
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Could not build selected query index");
+            rc = -1;
+        } else if (interval_index_is_regional(index)) {
+            index->build_seconds = alea_monotonic_seconds() - start;
+            if (automatic) sys->automatic_point_index = index;
+            else sys->selected_index = index;
+            atomic_store(&sys->selected_fallbacks, 0);
+            atomic_fetch_or(&sys->query_cache_state, automatic ? ALEA_CACHE_AUTO_POINTS : ALEA_CACHE_SELECTED_POINTS);
+        } else {
+            alea_prepared_queries_destroy(index);
+        }
+    }
+    if (child_count && !rc && !sys->selected_index) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Child point indexes require an indexed world domain");
+        rc = -1;
+    }
+    atomic_flag_clear(&sys->query_cache_build_lock);
+    return rc;
+}
+
+int alea_prepare_selected_queries(alea_system_t* sys, const alea_bbox_t* domain) {
+    return prepare_selected_points(sys, domain, false, NULL, false);
+}
+
+int alea_prepare_point_acceleration(alea_system_t* sys) {
+    const interval_point_children_t children = {.mode = CHILD_POINTS_ADAPTIVE};
+    return prepare_selected_points(sys, NULL, true, &children, false);
+}
+
+int alea_prepare_automatic_points(alea_system_t* sys) {
+    const interval_point_children_t children = {.mode = CHILD_POINTS_ADAPTIVE};
+    return prepare_selected_points(sys, NULL, true, &children, true);
+}
+
+/* Internal first-build experiment for the lifecycle benchmark. */
+int alea_prepare_root_points(alea_system_t* sys, const interval_point_children_t* children) {
+    return prepare_selected_points(sys, NULL, true, children, false);
+}
+
+int alea_promote_point_child(alea_system_t* sys, int universe_id) {
+    interval_index_t* idx = sys ? alea_system_selected_index(sys) : NULL;
+    const alea_universe_t* u = idx ? alea_get_universe(sys, universe_id) : NULL;
+    if (!idx || idx->child_mode != CHILD_POINTS_ADAPTIVE || universe_id <= 0 || !u) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Expected an adaptive point index and existing child universe");
+        return -1;
+    }
+    size_t i = (size_t)(u - sys->universes.data);
+    if (idx->universe_roots[i] != UINT32_MAX) return 0;
+    struct universe_scans* scans = &idx->scans[i];
+    int expected = CHILD_REGION_ABSENT;
+    if (!atomic_compare_exchange_strong(&scans->region_state, &expected, CHILD_REGION_BUILDING))
+        return expected == CHILD_REGION_READY ? 0 : 1;
+    const interval_point_children_t child = {&universe_id, 1, CHILD_POINTS_REGIONS};
+    alea_clear_error_detail();
+    interval_index_t* region = build_index(sys, &idx->domain, true, INDEX_CHILD_POINTS, &child);
+    if (!region || region->universe_roots[i] == UINT32_MAX || alea_interrupted()) {
+        alea_prepared_queries_destroy(region);
+        if (alea_interrupted()) alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Child point preparation interrupted");
+        else if (alea_get_last_error() == ALEA_OK)
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Could not build a region for the selected child");
+        atomic_store_explicit(&scans->region_state, CHILD_REGION_ABSENT, memory_order_release);
+        return -1;
+    }
+    scans->region = region;
+    atomic_store_explicit(&scans->region_state, CHILD_REGION_READY, memory_order_release);
+    return 0;
+}
+
+uint64_t alea_root_point_scan_tests(const alea_system_t* sys, size_t universe,
+                                   uint64_t* visits, double* local_seconds) {
+    if (local_seconds) *local_seconds = 0;
+    const interval_index_t* idx = alea_system_selected_index(sys);
+    if (!idx || !idx->scans || universe >= sys->universes.count) {
+        *visits = 0;
+        return 0;
+    }
+    if (local_seconds) *local_seconds = 1e-9 * atomic_load(&idx->scans[universe].local_ns);
+    *visits = atomic_load(&idx->scans[universe].visits);
+    return atomic_load(&idx->scans[universe].tests);
+}
+
+size_t alea_adaptive_child_progress(const alea_system_t* sys, size_t universe, double* seconds) {
+    const interval_index_t* idx = alea_system_selected_index(sys);
+    if (seconds) *seconds = 0;
+    if (!idx || idx->child_mode != CHILD_POINTS_ADAPTIVE || universe >= idx->scan_count) return 0;
+    size_t covered = atomic_load(&idx->scans[universe].covered);
+    if (seconds) *seconds = atomic_load(&idx->scans[universe].build_ns) * 1e-9;
+    return covered;
+}
+
+void alea_clear_selected_queries(alea_system_t* sys) {
+    if (!sys) return;
+    if (sys->selected_index || sys->automatic_point_index) {
+        atomic_fetch_and(&sys->query_cache_state, ~(ALEA_CACHE_SELECTED_POINTS | ALEA_CACHE_AUTO_POINTS));
+        alea_prepared_queries_destroy(sys->selected_index);
+        alea_prepared_queries_destroy(sys->automatic_point_index);
+        sys->selected_index = NULL;
+        sys->automatic_point_index = NULL;
+    }
+    atomic_store(&sys->point_lookup_count, 0);
+    atomic_store(&sys->point_sample_ns, 0);
+    atomic_store(&sys->point_promotion_attempted, 0);
+}
+
+int alea_selected_query_stats(const alea_system_t* sys, alea_selected_query_stats_t* stats) {
+    const interval_index_t* idx = sys ? alea_system_selected_index(sys) : NULL;
+    if (stats) {
+        *stats = (alea_selected_query_stats_t){0};
+        if (idx) {
+            stats->domain = idx->domain;
+            stats->bytes = interval_index_bytes(idx);
+            if (idx != sys->automatic_point_index && sys->automatic_point_index)
+                stats->bytes += interval_index_bytes(sys->automatic_point_index);
+            stats->build_seconds = idx->build_seconds;
+            stats->fallback_visits = atomic_load(&sys->selected_fallbacks);
+        }
+    }
+    return idx != NULL;
 }

@@ -238,6 +238,17 @@ alea_parallel_status_t alea_parallel_for(
     return map_status(status);
 }
 
+alea_parallel_status_t alea_parallel_for_independent(size_t item_count, size_t grain_size,
+                                                     alea_parallel_range_fn callback, void* context) {
+    tinypar_config_t config = {
+        .item_count = item_count,
+        .chunk_size = grain_size,
+        .max_workers = alea_parallel_effective_workers(item_count, grain_size, 0),
+        .schedule = TINYPAR_SCHEDULE_DYNAMIC
+    };
+    return map_status(tinypar_parallel_for(&config, callback, context));
+}
+
 const char* alea_parallel_status_string(alea_parallel_status_t status) {
     switch (status) {
         case ALEA_PARALLEL_OK: return tinypar_status_string(TINYPAR_OK);

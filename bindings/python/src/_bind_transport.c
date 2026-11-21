@@ -798,6 +798,14 @@ static PyObject* tr_result(const alea_transport_result_t* result) {
         "photon_replaced", result->photon_replaced,
         "photon_leaked", result->photon_leaked);
     if (!out) return NULL;
+    const alea_nav_recovery_stats_t* stats = &result->recovery;
+    if (dict_set_new(out, "recovery", Py_BuildValue("{s:K,s:K,s:d,s:i,s:i}",
+            "gaps", (unsigned long long)stats->gaps, "overlaps", (unsigned long long)stats->overlaps,
+            "distance_cm", stats->distance_cm, "last_enter_surface_id", stats->last_enter_surface_id,
+            "last_exit_surface_id", stats->last_exit_surface_id)) < 0) {
+        Py_DECREF(out);
+        return NULL;
+    }
     PyObject* tallies = PyList_New((Py_ssize_t)alea_tally_results_count(result->tallies));
     if (!tallies) { Py_DECREF(out); return NULL; }
     for (Py_ssize_t i = 0; i < PyList_GET_SIZE(tallies); ++i) {
@@ -898,6 +906,10 @@ static PyObject* mod_transport_run(PyObject* module, PyObject* args, PyObject* k
     if (n > SIZE_MAX) { PyErr_SetString(PyExc_ValueError, "max_pending_particles exceeds SIZE_MAX"); return NULL; }
     options.max_pending_particles = (size_t)n;
     if (tr_number(config, "max_segment_distance", &options.max_segment_distance) < 0) return NULL;
+    static const char* const modes[] = {"strict", "fast", "interval", "transport"};
+    int validation = tr_name(config, "navigation_validation", modes, 4, ALEA_NAV_VALIDATE_STRICT);
+    if (validation < 0) return NULL;
+    options.navigation_validation = (alea_nav_validation_mode_t)validation;
     if (PyDict_GetItemString(config, "boundary_distance_tolerance")) {
         if (tr_number(config, "boundary_distance_tolerance",
                       &options.boundary_distance_tolerance) < 0) return NULL;
@@ -959,10 +971,14 @@ static PyObject* mod_transport_run(PyObject* module, PyObject* args, PyObject* k
         if (err == ALEA_OK) out = tr_result(&result);
         else if (!prepared) PyErr_Format(PyExc_RuntimeError,
             "nuclear-data binding failed: %s", alea_error_string(err));
-        else PyErr_Format(PyExc_RuntimeError,
-            "transport failed: %s (history %u, cell %d, position %.6g %.6g %.6g)",
-            alea_error_string(err), failure.history_id, failure.cell_id,
-            failure.position[0], failure.position[1], failure.position[2]);
+        else {
+            char message[256];
+            snprintf(message, sizeof(message),
+                "transport failed: %s (history %u, cell %d, position %.6g %.6g %.6g)",
+                alea_error_string(err), failure.history_id, failure.cell_id,
+                failure.position[0], failure.position[1], failure.position[2]);
+            PyErr_SetString(PyExc_RuntimeError, message);
+        }
     }
     alea_transport_result_free(&result);
     alea_nuc_cell_bindings_free(bindings);

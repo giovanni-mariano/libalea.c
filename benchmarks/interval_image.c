@@ -102,6 +102,7 @@ interval_index_t* interval_index_restore(alea_system_t* sys, const alea_bbox_t* 
                                           const char* path) {
     interval_index_t* idx = calloc(1,sizeof(*idx));
     if (!idx) return NULL;
+    atomic_init(&idx->references, 1);
     idx->sys = sys;
     idx->geometry_generation = alea_system_geometry_generation(sys);
     idx->material_generation = alea_system_material_generation(sys);

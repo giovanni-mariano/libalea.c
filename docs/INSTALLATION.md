@@ -97,6 +97,12 @@ before `libalea.a`. The Metal build also needs `-framework Foundation -framework
 Run `make install-compute USE_METAL=0` or `make install-compute USE_METAL=1`
 to install the corresponding archive and `alea_compute.h`.
 
+The interactive 3D viewer uses SDL 2.0.18 or newer and a vendored copy of
+Nuklear for the probe and material controls. Build the CPU viewer with
+`make tools USE_SDL=1 RELEASE=1`. On the Metal backend, setting a cell or
+material visibility filter uses CPU tracing until **Show all** restores the
+unfiltered view.
+
 Build the interactive Metal viewers with
 `make tools USE_METAL=1 USE_SDL=1 RELEASE=1`. The build uses installed SDL2
 or fetches and builds a local copy. Then select the backend explicitly.

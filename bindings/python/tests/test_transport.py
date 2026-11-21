@@ -66,6 +66,27 @@ def test_fixed_source_and_tallies(tmp_path, particle):
         np.testing.assert_array_equal(first["mean"], second["mean"])
 
 
+def test_transport_recovery_is_opt_in(tmp_path):
+    xsdir_path = tmp_path / "xsdir"
+    xsdir_path.write_text("directory\n1001.80c 1.0 dummy.ace 0 1 1 1 0 0 2.5301e-8\n")
+    xsdir = pyalea.XsDir(str(xsdir_path))
+    system = pyalea.load_mcnp_string(
+        "Thin gap in a filled sphere\n1 0 -3 fill=7\n2 0 3 imp:n=0\n"
+        "11 0 -1 u=7\n12 0 2 u=7\n\n1 px 1\n2 px 1.00000000005\n3 so 3\n"
+    )
+    config = {"source": {"particle": "neutron", "energy": 2.0,
+                         "space": {"type": "point", "position": [0, 0, 0]},
+                         "angle": {"type": "monodirectional", "direction": [1, 0, 0]}}}
+    with pytest.raises(RuntimeError, match="transport failed"):
+        pyalea.transport_run(system, xsdir, config)
+    config["navigation_validation"] = "transport"
+    result = pyalea.transport_run(system, xsdir, config)
+    assert result["leaked"] == 1
+    assert result["recovery"] == {"gaps": 1, "overlaps": 0,
+                                  "distance_cm": pytest.approx(5e-11, abs=1e-16),
+                                  "last_enter_surface_id": 1, "last_exit_surface_id": 2}
+
+
 def test_box_source_and_invalid_tally(tmp_path):
     xsdir_path = tmp_path / "xsdir"
     xsdir_path.write_text(

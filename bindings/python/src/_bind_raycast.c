@@ -133,6 +133,30 @@ static PyObject* PyAleaSystem_raycast(PyAleaSystemObject* self, PyObject* args, 
     return out;
 }
 
+static PyObject* PyAleaSystem_diagnose_substep_fill(PyAleaSystemObject* self, PyObject* args) {
+    double origin[3], direction[3], t;
+    if (!PyArg_ParseTuple(args, "ddddddd", &origin[0], &origin[1], &origin[2],
+                          &direction[0], &direction[1], &direction[2], &t)) return NULL;
+    if (ensure_query_acceleration(self) < 0) return NULL;
+    alea_ray_substep_fill_t gap;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = alea_ray_diagnose_substep_fill(self->sys, origin, direction, t, &gap);
+    Py_END_ALLOW_THREADS
+    if (rc < 0) {
+        if (alea_get_last_error() == ALEA_ERR_INVALID_ARG)
+            PyErr_SetString(PyExc_ValueError, alea_error());
+        else
+            PyErr_SetString(PyExc_RuntimeError, "substep fill query failed");
+        return NULL;
+    }
+    if (!rc) Py_RETURN_NONE;
+    return Py_BuildValue("{s:i,s:i,s:i,s:i,s:d,s:d,s:d}",
+        "parent_cell_id", gap.parent_cell_id, "fill_universe", gap.fill_universe,
+        "enter_surface_id", gap.enter_surface_id, "exit_surface_id", gap.exit_surface_id,
+        "t_enter", gap.t_enter, "t_exit", gap.t_exit, "width", gap.width);
+}
+
 /* Interval defect classification along a ray (oracle-grade error detection).
  * Owner sets are complete: catches overlaps in isolation and gaps that the
  * precedence-resolved segments hide. */
@@ -1400,16 +1424,36 @@ static PyObject* PyAleaSystem_raycast_hier_fast(PyAleaSystemObject* self, PyObje
 
 /* Batch form of the segment-only hierarchical tracer.  Traversal happens
  * without the GIL; Python objects are materialised only after all rays finish. */
+static PyObject* PyAleaSystem_prepare_ray_acceleration(PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
+    PyObject* bounds = Py_None;
+    alea_bbox_t box;
+    static char* keywords[] = {"bounds", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O", keywords, &bounds)) return NULL;
+    if (bounds != Py_None && parse_cell_volume_bounds(bounds, &box)) return NULL;
+    int rc;
+    sighandler_func old_sigint = install_sigint();
+    Py_BEGIN_ALLOW_THREADS
+    rc = alea_prepare_ray_acceleration(self->sys, bounds == Py_None ? NULL : &box);
+    Py_END_ALLOW_THREADS
+    if (restore_sigint(old_sigint)) return NULL;
+    if (rc) {
+        PyErr_SetString(PyExc_RuntimeError, alea_error());
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 static PyObject* PyAleaSystem_raycast_hier_fast_batch(PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
     PyObject *origins_obj, *directions_obj;
     double t_max = 0.0;
     int include_paths = 0;
-    static char* kwlist[] = {"origins", "directions", "t_max", "include_paths", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO|dp", kwlist,
+    int include_surfaces = 1;
+    static char* kwlist[] = {"origins", "directions", "t_max", "include_paths", "include_surfaces", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO|dpp", kwlist,
                                      &origins_obj, &directions_obj, &t_max,
-                                     &include_paths)) return NULL;
+                                     &include_paths, &include_surfaces)) return NULL;
     if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
-    if (ensure_query_acceleration(self) < 0) return NULL;
+    if ((include_surfaces || include_paths) && ensure_query_acceleration(self) < 0) return NULL;
     PyArrayObject *origins = (PyArrayObject*)PyArray_FROM_OTF(origins_obj, NPY_DOUBLE, NPY_ARRAY_CARRAY_RO);
     PyArrayObject *directions = (PyArrayObject*)PyArray_FROM_OTF(directions_obj, NPY_DOUBLE, NPY_ARRAY_CARRAY_RO);
     if (!origins || !directions) { Py_XDECREF(origins); Py_XDECREF(directions); return NULL; }
@@ -1429,7 +1473,7 @@ static PyObject* PyAleaSystem_raycast_hier_fast_batch(PyAleaSystemObject* self, 
     alea_raycast_batch_options_t options = {
         .struct_size = sizeof(options),
         .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY |
-                  ALEA_RAY_BATCH_SURFACES | ALEA_RAY_BATCH_RESOLUTION_FLAGS |
+                  (include_surfaces ? ALEA_RAY_BATCH_SURFACES : 0) | ALEA_RAY_BATCH_RESOLUTION_FLAGS |
                   (include_paths ? ALEA_RAY_BATCH_FULL_PATHS : 0),
         .projected_depth = -1,
     };
@@ -1483,15 +1527,18 @@ static PyObject* PyAleaSystem_raycast_hier_fast_batch(PyAleaSystemObject* self, 
         for (size_t j = 0; j < count; ++j) {
             size_t segment_index = (size_t)ray_offsets[i] + j;
             PyObject *item = Py_BuildValue(
-                "{s:d,s:d,s:i,s:i,s:d,s:i,s:i,s:i}",
+                "{s:d,s:d,s:i,s:i,s:d,s:i}",
                 "t_enter", enters[segment_index],
                 "t_exit", exits[segment_index],
                 "cell_id", cells[segment_index],
                 "material_id", materials[segment_index],
                 "density", densities[segment_index],
-                "enter_surface_id", enter_surfaces[segment_index],
-                "exit_surface_id", exit_surfaces[segment_index],
                 "resolution_flags", resolution_flags[segment_index]);
+            if (item && include_surfaces &&
+                (dict_set_new(item, "enter_surface_id", PyLong_FromLong(enter_surfaces[segment_index])) < 0 ||
+                 dict_set_new(item, "exit_surface_id", PyLong_FromLong(exit_surfaces[segment_index])) < 0)) {
+                Py_CLEAR(item);
+            }
             if (item && include_paths) {
                 size_t path_count = (size_t)(
                     path_offsets[segment_index + 1] - path_offsets[segment_index]);

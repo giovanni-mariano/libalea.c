@@ -35,3 +35,9 @@ endif
 # Relink viewers when switching USE_SDL without requiring a clean build.
 .PHONY: viewer-config
 viewer-config:
+
+ifeq ($(USE_SDL),1)
+  VIEW_INSPECTOR_SRC := $(SDL_TOOLS_DIR)/render_inspector.c
+  VIEW_INSPECTOR_DEPS := $(VIEW_INSPECTOR_SRC) $(SDL_TOOLS_DIR)/render_inspector.h $(SDL_TOOLS_DIR)/render_section.h $(SDL_TOOLS_DIR)/sdl_text.h \
+    $(SDL_TOOLS_DIR)/../vendor/nuklear/nuklear.h $(SDL_TOOLS_DIR)/../vendor/nuklear/nuklear_sdl_renderer.h
+endif

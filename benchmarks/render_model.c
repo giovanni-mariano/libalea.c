@@ -4,6 +4,7 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "alea_compute.h"
+#include "render_benchmark_view.h"
 #include "core/alea_cell.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,7 +69,7 @@ static uint64_t executable_identity(const char* path) {
 int main(int argc,char**argv) {
     if(argc!=3 && argc!=5 && argc!=6 && argc!=7) {
         fprintf(stderr,"Usage: %s MODEL auto|bounds|current|lazy|sah|weighted|refill|balanced|all [WIDTH HEIGHT [FRAMES [VIEW]]]\n",argv[0]);
-        fprintf(stderr,"ITER cameras: VIEW 1=cutaway (default), 2=opposite cutaway, 3=exterior, 4=component close-up. Default 16x12, two frames. Prefix a mode with p- for progressive comparisons. ALEA_BENCH_PROFILE enables instrumented CSV output.\n");return 1;
+        fprintf(stderr,"Model-relative cameras: VIEW 1=cutaway (default), 2=opposite cutaway, 3=exterior, 4=center close-up. Default 16x12, two frames. Prefix a mode with p- for progressive comparisons. ALEA_BENCH_PROFILE enables instrumented CSV output.\n");return 1;
     }
     int width=argc>=5?integer(argv[3],4096):16,height=argc>=5?integer(argv[4],4096):12;
     int frames=argc>=6?integer(argv[5],100):2,view=argc==7?integer(argv[6],4):1;
@@ -93,13 +94,16 @@ int main(int argc,char**argv) {
     if(!sys){fprintf(stderr,"%s\n",alea_error());return 1;}
     printf("Load %.3f s\n",seconds()-start);
     render_config_t cfg;render_config_init(&cfg);cfg.width=width;cfg.height=height;cfg.log_level=0;
-    cfg.eye_set=cfg.target_set=1;cfg.eye[0]=1800;cfg.eye[1]=-2200;cfg.eye[2]=1400;
-    cfg.target[0]=cfg.target[1]=cfg.target[2]=0;
-    cfg.num_clips=1;cfg.clips[0]=(render_clip_plane_t){{0,1,0},0};
-    if(view==2){cfg.eye[0]=-1800;cfg.eye[1]=2200;cfg.eye[2]=1000;cfg.clips[0].normal[1]=-1;}
-    if(view==3)cfg.num_clips=0;
-    if(view==4){cfg.eye[0]=300;cfg.eye[1]=80;cfg.eye[2]=-120;cfg.target[0]=300;cfg.target[1]=300;cfg.target[2]=-200;cfg.num_clips=0;}
-    if(synthetic){cfg.eye[0]=0;cfg.eye[1]=-35;cfg.eye[2]=12;cfg.target[0]=cfg.target[1]=cfg.target[2]=0;cfg.num_clips=0;}
+    if (synthetic) {
+        cfg.eye_set = cfg.target_set = 1;
+        cfg.eye[0] = 0; cfg.eye[1] = -35; cfg.eye[2] = 12;
+        cfg.target[0] = cfg.target[1] = cfg.target[2] = 0;
+    } else if (benchmark_set_view(&cfg, sys, view) != 0) {
+        fprintf(stderr, "Cannot fit benchmark camera to model bounds\n");
+        render_config_free(&cfg);
+        mcnp_model_destroy(model);
+        return 1;
+    }
     printf("Camera eye %.9g,%.9g,%.9g target %.9g,%.9g,%.9g, clips %d\n",cfg.eye[0],cfg.eye[1],cfg.eye[2],cfg.target[0],cfg.target[1],cfg.target[2],cfg.num_clips);
     render_camera_t camera;
     render_framebuffer_t* image[2]={NULL,NULL};alea_compute_t* gpu[2]={NULL,NULL};double times[2][100];int status=1;

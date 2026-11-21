@@ -29,6 +29,62 @@ def test_native_module_is_private_package_member():
     assert pyalea.__version__ == pyalea.version()
 
 
+def test_adaptive_point_queries_handle_undefined_fills_and_edits():
+    system = pyalea.load_mcnp_string(
+        "Partially filled sphere\n101 0 -1 fill=10\n205 7 -1 -2 u=10\n\n1 so 5\n2 so 1\n\n")
+    for _ in range(2):
+        assert system.prepare_point_acceleration() is None
+    assert system.find_cell_at(0, 0, 0) == (205, 7)
+    assert system.find_cell(0, 0, 0) == (1, 7, 0)
+    assert system.material_at(0, 0, 0) == 7
+    assert system.find_cell_at(3, 0, 0) == (101, 0)
+    assert system.find_cell(3, 0, 0) == (0, 0, 1)
+    assert system.material_at(3, 0, 0) is None
+    assert system.find_cell_at(6, 0, 0) is None
+    assert system.find_cell(6, 0, 0) is None
+    assert system.material_at(6, 0, 0) is None
+    _, _, moved = system.sphere_surface(3, 3, 0, 0, 1)
+    system.cell_set_region(1, moved)
+    assert system.find_cell_at(3, 0, 0) == (205, 7)
+    system.prepare_point_acceleration()
+    assert system.find_cell(0, 0, 0) == (0, 0, 1)
+    assert system.find_cell(3, 0, 0) == (1, 7, 0)
+
+
+def test_prepared_ray_batch_preserves_requested_fields_and_observes_edits(populated_system):
+    system = populated_system
+    origins, directions = [[-3, 0, 0]], [[2, 0, 0]]
+    full = system.raycast_hier_fast_batch(origins, directions, 6)
+    system.prepare_ray_acceleration(bounds=(-4, 4, -4, 4, -4, 4))
+    expected = [{k: v for k, v in row.items() if k not in ("enter_surface_id", "exit_surface_id")}
+                for row in full[0]]
+    assert system.raycast_hier_fast_batch(origins, directions, 6, include_surfaces=False) == [expected]
+    assert system.raycast_hier_fast_batch(origins, directions, 6) == full
+    _, _, moved = system.sphere_surface(2, 8, 0, 0, 1)
+    system.cell_set_region(0, moved)
+    system.prepare_ray_acceleration()
+    rows = system.raycast_hier_fast_batch(origins, directions, 6, include_surfaces=False)
+    assert [row["cell_id"] for row in rows[0]] == [-1]
+
+
+def test_point_preparation_on_an_unbounded_world():
+    system = pyalea.load_mcnp_string("Halfspace\n91 0 -1\n\n1 px 0\n\n")
+    system.prepare_point_acceleration()
+    assert system.find_cell_at(-1, 0, 0) == (91, 0)
+    assert system.find_cell_at(1, 0, 0) is None
+
+
+def test_point_preparation_preserves_find_cell_overlap_order():
+    path = Path(__file__).resolve().parents[3] / "tests/data/mcnp_overlap.mcnp"
+    reference = pyalea.load_mcnp(str(path))
+    prepared = pyalea.load_mcnp(str(path))
+    prepared.prepare_point_acceleration()
+    # Enter the second sphere alone, then move into its overlap with the first.
+    xs = (7, 2, -4, 2)
+    expected = [reference.find_cell(x, 0, 0) for x in xs]
+    assert [prepared.find_cell(x, 0, 0) for x in xs] == expected
+
+
 def test_public_names_are_forwarded():
     assert "System" in pyalea.__all__
     assert pyalea.System is pyalea._alea.System
@@ -625,6 +681,26 @@ def test_reinitializing_owned_types_replaces_native_state():
     multigroup = pyalea.Multigroup([10.0, 1.0, 0.1])
     multigroup.__init__([20.0, 2.0])
     assert multigroup.n_groups == 1
+
+
+def test_diagnose_substep_fill_reports_both_surfaces():
+    system = pyalea.System()
+    distance, width = 1310720.0, 2.0**-34
+    _, _, parent_region = system.sphere_surface(1, 0, 0, 0, 2 * distance)
+    _, _, left = system.plane_surface(31, 1, 0, 0, 0)
+    _, right, _ = system.plane_surface(12, 1, 0, 0, -width)
+    parent = system.add_cell(100, parent_region)
+    system.set_fill(parent, 7)
+    system.add_cell(10, left, universe_id=7)
+    system.add_cell(20, right, universe_id=7)
+
+    assert system.diagnose_substep_fill(-distance, 0, 0, 1, 0, 0, distance) == {
+        "parent_cell_id": 100, "fill_universe": 7, "enter_surface_id": 31,
+        "exit_surface_id": 12, "t_enter": distance, "t_exit": distance, "width": width,
+    }
+    assert system.diagnose_substep_fill(-distance, 0, 0, 1, 0, 0, 1.0) is None
+    with pytest.raises(ValueError):
+        system.diagnose_substep_fill(-distance, 0, 0, 0, 0, 0, distance)
 
 
 def transformed_fill_system(transform_factory):

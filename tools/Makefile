@@ -78,11 +78,16 @@ all: $(TOOLS)
 $(BIN_DIR)/mc_convert$(EXEEXT): mc_convert.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
-$(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c sdl_view.h viewer-config $(VIEW_COMPUTE_DEP)
+$(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c sdl_view.h sdl_text.h viewer-config $(VIEW_COMPUTE_DEP)
 	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) $(VIEW_COMPUTE_CFLAGS) -o $@ $< $(VIEW_COMPUTE_LIBS) $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
 
-$(BIN_DIR)/render3d$(EXEEXT): ../examples/c/render3d.c render_view.h sdl_view.h viewer-config $(VIEW_COMPUTE_DEP)
-	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) $(VIEW_COMPUTE_CFLAGS) -o $@ $< $(VIEW_COMPUTE_LIBS) $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
+$(BIN_DIR)/render3d$(EXEEXT): ../examples/c/render3d.c render_view.h sdl_view.h $(VIEW_INSPECTOR_DEPS) viewer-config $(VIEW_COMPUTE_DEP)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) $(VIEW_COMPUTE_CFLAGS) -o $@ $< $(VIEW_INSPECTOR_SRC) $(VIEW_COMPUTE_LIBS) $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
+
+ifeq ($(USE_SDL),1)
+$(BIN_DIR)/interactive_render_replay$(EXEEXT): ../benchmarks/interactive_render_replay.c ../examples/c/render3d.c render_view.h sdl_view.h $(BIN_DIR)/libalea.a $(VIEW_INSPECTOR_DEPS) viewer-config
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(VIEW_INSPECTOR_SRC) $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
+endif
 
 $(BIN_DIR)/nuc_plot$(EXEEXT): nuc_plot.c \
                               $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a

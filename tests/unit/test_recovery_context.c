@@ -7,19 +7,32 @@
 #include "raycast/recovery_context.h"
 #include "raycast/recovery_planes.h"
 
+TEST(recovery_root_records_preserve_distance_bits_and_card_order) {
+    const double distances[] = {-0.0, DBL_TRUE_MIN, nextafter(1.0, 2.0), DBL_MAX};
+    recovery_root_t roots[4];
+    for (unsigned i = 0; i < 4; ++i) {
+        roots[i] = recovery_root_make(distances[i], 100000, i);
+        double actual = recovery_root_distance(&roots[i]);
+        ASSERT_EQ(memcmp(&actual, &distances[i], sizeof(actual)), 0);
+        ASSERT_EQ(roots[i].order, 400000u + i);
+    }
+    ASSERT_EQ(sizeof(roots), 4 * (sizeof(double) + sizeof(uint32_t)));
+}
+
 TEST(recovery_roots_preserve_alias_order_and_strict_current_boundary) {
-    recovery_root_t roots[]={{2,9,0},{1,7,0},{2,3,1},{2,3,0},
-                             {nextafter(1,INFINITY),0,0},{3,0,0}};
+    recovery_root_t roots[]={recovery_root_make(2,9,0), recovery_root_make(1,7,0),
+        recovery_root_make(2,3,1), recovery_root_make(2,3,0),
+        recovery_root_make(nextafter(1,INFINITY),0,0), recovery_root_make(3,0,0)};
     qsort(roots,6,sizeof(*roots),recovery_root_compare);
     recovery_context_entry_t entry={.roots=roots,.root_count=6};
     const recovery_root_t* hit=recovery_root_first(&entry,1,2,1);
     ASSERT_NOT_NULL(hit);
-    ASSERT_EQ(hit->t,2);
-    ASSERT_EQ(hit->ordinal,3);
-    ASSERT_EQ(hit->root,0);
+    ASSERT_EQ(recovery_root_distance(hit),2);
+    ASSERT_EQ(hit->order / 4u,3);
+    ASSERT_EQ(hit->order % 4u,0);
     ASSERT(recovery_root_first(&entry,1,nextafter(2,0),1)==NULL);
-    ASSERT_EQ(recovery_root_first(&entry,2,3,2)->t,3);
-    ASSERT_EQ(recovery_root_first(&entry,1,1,0)->ordinal,7);
+    ASSERT_EQ(recovery_root_distance(recovery_root_first(&entry,2,3,2)),3);
+    ASSERT_EQ(recovery_root_first(&entry,1,1,0)->order / 4u,7);
     entry.root_count=0;
     ASSERT(recovery_root_first(&entry,0,4,0)==NULL);
 }
@@ -40,7 +53,7 @@ TEST(recovery_context_separates_local_rays_and_transform_occurrences) {
     ASSERT(!recovery_context_contains(original,2,6));
     original->roots=malloc(sizeof(*original->roots));
     ASSERT_NOT_NULL(original->roots);
-    original->roots[0]=(recovery_root_t){3,0,0};
+    original->roots[0]=recovery_root_make(3,0,0);
     original->root_count=1; original->roots_complete=true;
     ray.ox=2;
     ASSERT(recovery_context_key(&key,cards,2,&ray,NULL));
@@ -57,7 +70,7 @@ TEST(recovery_context_separates_local_rays_and_transform_occurrences) {
 
 TEST(recovery_root_binary_search_matches_ordered_scan) {
     recovery_root_t original[512], sorted[512];
-    for (unsigned i=0;i<512;i++) original[i]=(recovery_root_t){(i*73)%137,i/4,i%4};
+    for (unsigned i=0;i<512;i++) original[i]=recovery_root_make((i*73)%137,i/4,i%4);
     memcpy(sorted,original,sizeof(sorted));
     qsort(sorted,512,sizeof(*sorted),recovery_root_compare);
     recovery_context_entry_t entry={.roots=sorted,.root_count=512};
@@ -66,15 +79,15 @@ TEST(recovery_root_binary_search_matches_ordered_scan) {
         const recovery_root_t* expected=NULL;
         for (unsigned i=0;i<512;i++) {
             const recovery_root_t* r=&original[i];
-            if (r->t>=lo && r->t<=hi && r->t>nextafter(current,INFINITY) &&
-                (!expected || r->t<expected->t)) expected=r;
+            double t = recovery_root_distance(r);
+            if (t >= lo && t <= hi && t > nextafter(current, INFINITY) &&
+                (!expected || t < recovery_root_distance(expected))) expected = r;
         }
         const recovery_root_t* actual=recovery_root_first(&entry,lo,hi,current);
         ASSERT((expected==NULL)==(actual==NULL));
         if (expected) {
-            ASSERT_EQ(actual->t,expected->t);
-            ASSERT_EQ(actual->ordinal,expected->ordinal);
-            ASSERT_EQ(actual->root,expected->root);
+            ASSERT_EQ(recovery_root_distance(actual),recovery_root_distance(expected));
+            ASSERT_EQ(actual->order,expected->order);
         }
     }
 }
@@ -124,6 +137,9 @@ TEST(recovery_cached_windows_match_scan_with_planes_aliases_and_torus) {
         /* Populate a bounded cache, then query across both ends of it.
          * The farther torus is the next crossing on the extended ray. */
         double lo=35+k*.7, hi= k < 24 ? 52 : 100;
+        /* The first retry ends before any crossing. Its cache can still
+         * answer later intervals on this same finite ray. */
+        if (k==0) hi=lo+.01;
         if (k==63) { lo=7; hi=8; }
         if (k==64) { lo=51.99; hi=52; }
         for (size_t i=0;i<table->capacity;i++) {
@@ -134,9 +150,11 @@ TEST(recovery_cached_windows_match_scan_with_planes_aliases_and_torus) {
         reference.breakpoint_nearest_only=cached.breakpoint_nearest_only=1;
         reference.breakpoint_t_min=cached.breakpoint_t_min=lo;
         cached.recovery_context=table;
+        if (k==0) cached.recovery_root_limit=52;
         ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(sys,&ray,lo,hi,1,&reference),0);
         ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(sys,&ray,lo,hi,1,&cached),0);
         ASSERT_EQ(reference.hits.count,cached.hits.count);
+        if (k==0) ASSERT_EQ(cached.hits.count,0);
         for (size_t i=0;i<reference.hits.count;i++) {
             const alea_ray_hit_t *a=&reference.hits.data[i], *b=&cached.hits.data[i];
             ASSERT_EQ(a->t,b->t); ASSERT_EQ(a->surface_id,b->surface_id);
@@ -161,8 +179,8 @@ TEST(recovery_cached_windows_match_scan_with_planes_aliases_and_torus) {
         exceptional+=entry->exceptional_count;
         ASSERT_EQ(entry->roots_hi,52);
         for (size_t j=0;j<entry->root_count;j++) {
-            ASSERT(entry->roots[j].t>=entry->roots_lo);
-            ASSERT(entry->roots[j].t<=entry->roots_hi);
+            ASSERT(recovery_root_distance(&entry->roots[j])>=entry->roots_lo);
+            ASSERT(recovery_root_distance(&entry->roots[j])<=entry->roots_hi);
         }
     }
     ASSERT_EQ(built,1); ASSERT_EQ(exceptional,1);
@@ -184,12 +202,68 @@ TEST(recovery_cached_windows_match_scan_with_planes_aliases_and_torus) {
     alea_destroy(sys);
 }
 
+TEST(transport_fill_filter_preserves_duplicate_hits_budget_and_unindexed_geometry) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 100);
+    int plane = alea_plane_surface(sys, 100, 1, 0, 0, 0);
+    int alias = alea_plane_surface(sys, 101, 1, 0, 0, 0);
+    int offset = alea_plane_surface(sys, 102, 1, 0, 0, -2);
+    ASSERT(sphere >= 0 && plane >= 0 && alias >= 0 && offset >= 0);
+    int parent = alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1), ALEA_MATERIAL_VOID, 0, 0);
+    double translation[] = {10, 0, 0};
+    ASSERT(parent >= 0);
+    ASSERT_EQ(alea_add_transform(sys, 1, translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, parent, 1, 1), 0);
+    for (int i = 0; i < 3; ++i) {
+        alea_node_id_t leaf = alea_halfspace(sys, i == 2 ? alias : plane, -1);
+        ASSERT(alea_add_cell(sys, 2+i, leaf, ALEA_MATERIAL_VOID, 0, 1) >= 0);
+    }
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    const alea_universe_t* universe = alea_get_universe(sys, 1);
+    ASSERT_NOT_NULL(universe);
+    ASSERT(universe->recovery_surfaces_exact);
+    ASSERT_EQ(universe->recovery_surface_count, 2);
+    alea_raycast_result_t raw;
+    alea_raycast_result_init(&raw);
+    raw.transport_fill_filter = true;
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -1, 0, 0, 1, 0, 0), 0);
+    ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(sys, &ray, 11, 12, 3, &raw), 0);
+    ASSERT_EQ(raw.hits.count, 3);
+    int aliases = 0;
+    for (size_t i = 0; i < raw.hits.count; ++i) {
+        ASSERT_EQ(raw.hits.data[i].t, 11);
+        ASSERT(raw.hits.data[i].surface_id == 100 || raw.hits.data[i].surface_id == 101);
+        aliases += raw.hits.data[i].surface_id == 101;
+    }
+    ASSERT_EQ(aliases, 1);
+    ASSERT(alea_raycast_validation_breakpoints_reuse_nocache(sys, &ray, 11, 12, 2, &raw) < 0);
+
+    /* An edited leaf can carry a surface ID whose registered primitive differs.
+     * The cell tree then supplies a crossing absent from the indexed cards. */
+    alea_node_id_t leaf = alea_add_primitive_node(sys, sys->surfaces.data[offset].primitive_id, -1, 0, 100);
+    ASSERT(leaf != ALEA_NODE_ID_INVALID);
+    ASSERT(alea_add_cell(sys, 5, leaf, ALEA_MATERIAL_VOID, 0, 1) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    universe = alea_get_universe(sys, 1);
+    ASSERT_NOT_NULL(universe);
+    ASSERT_NOT_NULL(universe->recovery_surfaces);
+    ASSERT(!universe->recovery_surfaces_exact);
+    ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(sys, &ray, 12, 13, 3, &raw), 0);
+    ASSERT_EQ(raw.hits.count, 1);
+    ASSERT_EQ(raw.hits.data[0].t, 13);
+    ASSERT_EQ(raw.hits.data[0].surface_id, 100);
+    alea_raycast_result_free(&raw);
+    alea_destroy(sys);
+}
+
 TEST(binned_recovery_matches_sorted_roots_for_arbitrary_window_order) {
     recovery_root_t input[512], sorted[512];
     for (unsigned i=0;i<512;++i) {
         /* Crowded, sparse and empty bins, with exact ties in both scan paths. */
         double t = i%2 ? 0.5+(i%4)*0.125 : (i*37)%128;
-        input[i]=(recovery_root_t){t,i/4,i%4};
+        input[i]=recovery_root_make(t,i/4,i%4);
     }
     memcpy(sorted,input,sizeof(input));
     qsort(sorted,512,sizeof(*sorted),recovery_root_compare);
@@ -203,16 +277,15 @@ TEST(binned_recovery_matches_sorted_roots_for_arbitrary_window_order) {
     ASSERT(recovery_root_first(&binned,127,128,126)==NULL);
     ASSERT_EQ(binned.sorted_bins,0);
     for (unsigned i=0;i<1200;++i) {
-        double lo = i%3 ? (i*31)%128 : input[i%512].t;
+        double lo = i%3 ? (i*31)%128 : recovery_root_distance(&input[i%512]);
         double hi = lo+(i%5);
         double current = i%2 ? nextafter(nextafter(lo,-INFINITY),-INFINITY) : lo;
         const recovery_root_t* a = recovery_root_first(&reference,lo,hi,current);
         const recovery_root_t* b = recovery_root_first(&binned,lo,hi,current);
         ASSERT((a==NULL)==(b==NULL));
         if (a) {
-            ASSERT_EQ(a->t,b->t);
-            ASSERT_EQ(a->ordinal,b->ordinal);
-            ASSERT_EQ(a->root,b->root);
+            ASSERT_EQ(recovery_root_distance(a),recovery_root_distance(b));
+            ASSERT_EQ(a->order,b->order);
         }
     }
     ASSERT(binned.sorted_bins & UINT64_C(1));

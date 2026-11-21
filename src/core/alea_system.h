@@ -34,7 +34,11 @@ extern atomic_int g_alea_interrupted;
 #define ALEA_CACHE_RECOVERY_SURFACES (1u << 6)
 #define ALEA_CACHE_RECOVERY_CHILDREN (1u << 7)
 #define ALEA_CACHE_REGIONAL (1u << 8)
-/* The hierarchical spatial index is the only spatial backend. */
+#define ALEA_CACHE_SELECTED_POINTS (1u << 9)
+#define ALEA_CACHE_FILL_MATRICES (1u << 10)
+#define ALEA_CACHE_BATCH_RAYS (1u << 11)
+#define ALEA_CACHE_AUTO_POINTS (1u << 12)
+#define ALEA_CACHE_RAY_RECOVERY (ALEA_CACHE_RECOVERY_CHILDREN | ALEA_CACHE_RECOVERY_SURFACES)
 #define ALEA_CACHE_RAYCAST \
     (ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES | ALEA_CACHE_RECOVERY_SURFACES | \
      ALEA_CACHE_RECOVERY_CHILDREN | ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_SURFACE_BVH | \
@@ -53,6 +57,20 @@ extern atomic_int g_alea_interrupted;
         return (retval); \
     } \
 } while (0)
+
+/* Deduplicated forward/inverse fill transforms, indexed by model cell. */
+typedef struct {
+    uint32_t* slots;
+    size_t slot_count;
+    alea_matrix_t* matrices;
+    size_t count;
+    size_t capacity;
+} alea_fill_matrix_cache_t;
+
+int alea_build_fill_matrix_cache(alea_system_t* sys);
+/* Borrowed until a geometry edit or reset. NULL for an unprepared cache or
+ * a cell without an ordinary fill. */
+const alea_matrix_t* alea_cell_fill_matrix(const alea_system_t* sys, uint32_t cell_index);
 
 /* Forward declaration for BVH */
 struct alea_bvh;
@@ -404,12 +422,19 @@ typedef struct alea_system {
     size_t surface_cell_ref_count;
 
     /* Hierarchical spatial index (prepared query cache) */
+    alea_fill_matrix_cache_t fill_matrices;
     struct alea_hier_spatial_index* hier_spatial_index;
     struct alea_volume_path_index* volume_path_index;
     atomic_int spatial_build_state;  /* 0=pending, 1=building, 2=done */
     atomic_uint query_cache_state;
     atomic_flag query_cache_build_lock;
     struct alea_regional_cache* regional_cache;
+    struct interval_index* selected_index;
+    struct interval_index* automatic_point_index;
+    atomic_uint_fast64_t point_lookup_count, point_sample_ns;
+    atomic_int point_promotion_attempted;
+    struct interval_index* ray_batch_index;
+    atomic_uint_fast64_t selected_fallbacks;
     uint64_t system_id;
     atomic_uint_fast64_t geometry_generation;
     atomic_uint_fast64_t material_generation;
@@ -427,6 +452,14 @@ typedef struct alea_system {
     int next_auto_cell_id;
 } alea_system_t;
 
+/* Cache state publishes the completed index to concurrent read-only callers.
+ * Clearing the index and editing the model require exclusive access. */
+static inline struct interval_index* alea_system_selected_index(const alea_system_t* sys) {
+    unsigned state = atomic_load(&sys->query_cache_state);
+    if (state & ALEA_CACHE_SELECTED_POINTS) return sys->selected_index;
+    return (state & ALEA_CACHE_AUTO_POINTS) ? sys->automatic_point_index : NULL;
+}
+
 /* Defaults shared by cell constructors and bulk geometry operations. */
 static inline void alea_cell_entry_init(alea_cell_entry_t* cell) {
     *cell = (alea_cell_entry_t){
@@ -437,6 +470,7 @@ static inline void alea_cell_entry_init(alea_cell_entry_t* cell) {
     };
 }
 
+int alea_system_try_prepare_ray_recovery(alea_system_t* sys);
 int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags);
 uint64_t alea_system_geometry_generation(const alea_system_t* sys);
 uint64_t alea_system_material_generation(const alea_system_t* sys);

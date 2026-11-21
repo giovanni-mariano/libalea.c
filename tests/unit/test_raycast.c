@@ -598,6 +598,89 @@ TEST(raycast_interval_visitor_progresses_beyond_legacy_step_limit) {
     mcnp_model_destroy(model);
 }
 
+TEST(rounded_fill_rotation_keeps_world_boundary_distances) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int outer = alea_sphere_surface(sys, 1, 0, 0, 0, 10);
+    int inner = alea_sphere_surface(sys, 2, 0, 0, 0, 2);
+    int material = alea_add_material(sys, 17);
+    ASSERT(outer >= 0 && inner >= 0 && material >= 0);
+    int parent = alea_add_cell(sys, 10, alea_surface_at(sys, outer)->neg_node,
+                               ALEA_MATERIAL_VOID, 0, 0);
+    ASSERT(parent >= 0);
+    ASSERT(alea_add_cell(sys, 20, alea_surface_at(sys, inner)->neg_node, material, -1, 7) >= 0);
+    ASSERT(alea_add_cell(sys, 30, alea_surface_at(sys, inner)->pos_node,
+                         ALEA_MATERIAL_VOID, 0, 7) >= 0);
+    const double c = 0.86602, s = 0.5;
+    const double rotation[] = {0, 0, 0, c, s, 0, -s, c, 0, 0, 0, 1};
+    ASSERT_EQ(alea_add_transform(sys, 1, rotation, 12, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, parent, 7, 1), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    /* The rounded rotation maps the local equator to a world circle of
+     * radius 2*hypot(c,s). The offset chord tests both roots. */
+    const double y = 1;
+    const double chord = sqrt(4 * (c*c + s*s) - y*y);
+    const double origin[] = {-3, y, 0}, direction[] = {2, 0, 0};
+    alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+    ASSERT_NOT_NULL(batch);
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origin, direction, 1, 6, NULL, batch), 0);
+    ASSERT_EQ(alea_raycast_batch_segment_count(batch), 3);
+    ASSERT_EQ(alea_raycast_batch_cell_ids(batch)[1], 20);
+    ASSERT_NEAR(alea_raycast_batch_t_enter(batch)[1], 3 - chord, 1e-11);
+    ASSERT_NEAR(alea_raycast_batch_t_exit(batch)[1], 3 + chord, 1e-11);
+    alea_raycast_batch_result_destroy(batch);
+
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(nav);
+    const double inside[] = {0, y, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(nav, inside, direction, &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 4, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+    ASSERT_EQ(event.surface_id, 2);
+    ASSERT_EQ(event.before.cell_id, 20);
+    ASSERT_EQ(event.after.cell_id, 30);
+    ASSERT_NEAR(event.distance, chord, 1e-11);
+    alea_ray_navigator_destroy(nav);
+    alea_destroy(sys);
+}
+
+TEST(raycast_recovers_terminal_owner_after_leaving_fill) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    /* The expanded ellipsoid loses precision near x = 100.02. Its
+     * near-boundary sample can still classify as inside the filled cell. */
+    const double radius = 0.02;
+    int shell = alea_quadric_surface(sys, 1, 1, 2, 3, 0, 0, 0,
+                                     -200, 0, 0, 10000 - radius * radius);
+    int plane = alea_plane_surface(sys, 2, 1, 0, 0, -105);
+    int material = alea_add_material(sys, 1);
+    ASSERT(shell >= 0 && plane >= 0 && material >= 0);
+    int parent = alea_add_cell(sys, 10, alea_halfspace(sys, shell, -1),
+                               ALEA_MATERIAL_VOID, 0, 0);
+    ASSERT(parent >= 0);
+    ASSERT(alea_add_cell(sys, 20, alea_halfspace(sys, plane, -1),
+                         material, -1, 2) >= 0);
+    ASSERT_EQ(alea_set_fill(sys, parent, 2, 0), 0);
+    ASSERT(alea_add_cell(sys, 30, alea_halfspace(sys, shell, 1),
+                         ALEA_MATERIAL_VOID, 0, 0) >= 0);
+
+    double origin[] = {100, 0, 0}, direction[] = {1, 0, 0};
+    alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+    ASSERT_NOT_NULL(batch);
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origin, direction, 1, 1, NULL, batch), 0);
+    ASSERT_EQ(alea_raycast_batch_segment_count(batch), 2);
+    ASSERT_EQ(alea_raycast_batch_cell_ids(batch)[0], 20);
+    ASSERT_EQ(alea_raycast_batch_cell_ids(batch)[1], 30);
+    ASSERT_NEAR(alea_raycast_batch_t_exit(batch)[0], radius, 1e-9);
+    ASSERT_NEAR(alea_raycast_batch_t_enter(batch)[1], radius, 1e-9);
+    ASSERT_EQ(alea_raycast_batch_t_exit(batch)[1], 1.0);
+    alea_raycast_batch_result_destroy(batch);
+    alea_destroy(sys);
+}
+
 TEST(persistent_navigator_competes_collision_and_boundary_and_clones) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -1027,6 +1110,91 @@ TEST(persistent_navigator_interval_finds_thin_hidden_overlap) {
     alea_destroy(sys);
 }
 
+TEST(persistent_navigator_recovered_root_uses_the_incident_cells_boundary) {
+    /* At this grazing angle the first forward probe rounds back onto x=1000.
+     * Recovery finds cell 2, but the y=20 plane only bounds cell 1. */
+    const char deck[] = "Grazing root recovery\n1 1 -1 -1 -2\n2 1 -1 1 -3\n\n"
+                        "1 px 1000\n2 py 20\n3 py 50\n\nm1 1001 1\n";
+    mcnp_model_t* model = mcnp_load_string(deck, sizeof(deck)-1);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_surface_set_boundary(model->sys, 2, ALEA_BOUNDARY_VACUUM), 0);
+    ASSERT_EQ(alea_surface_set_boundary(model->sys, 3, ALEA_BOUNDARY_REFLECTIVE), 0);
+    const double origin[] = {1000, 0, 0}, direction[] = {.001, 1, 0};
+    for (int mode = 0; mode <= 2; ++mode) {
+        alea_ray_navigator_t* nav = alea_ray_navigator_create(model->sys);
+        ASSERT_NOT_NULL(nav);
+        alea_nav_location_t loc;
+        alea_nav_event_t e;
+        ASSERT_EQ(alea_ray_navigator_set_validation_mode(nav, mode), 0);
+        ASSERT_EQ(alea_ray_navigator_restart(nav, origin, direction, &loc), 0);
+        ASSERT_EQ(loc.cell_id, 2);
+        ASSERT_EQ(alea_ray_navigator_advance(nav, 10, 60, &e), 0);
+        ASSERT_EQ(e.kind, ALEA_NAV_COLLISION);
+        ASSERT_EQ(e.distance, 10);
+        ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 60, &e), 0);
+        ASSERT_EQ(e.kind, ALEA_NAV_BOUNDARY_ACTION);
+        ASSERT_EQ(e.surface_id, 3);
+        ASSERT_EQ(e.boundary_type, ALEA_BOUNDARY_REFLECTIVE);
+        ASSERT_NEAR(e.position[1], 50, 1e-12);
+        alea_ray_navigator_destroy(nav);
+    }
+
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(nav);
+    alea_nav_location_t loc;
+    alea_nav_event_t e;
+    /* A low proof budget also leaves the original checkpoint in force. */
+    ASSERT_EQ(alea_ray_navigator_set_interval_budget(nav, 1), 0);
+    ASSERT_EQ(alea_ray_navigator_restart(nav, origin, direction, &loc), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(nav, 5, 60, &e), 0);
+    ASSERT_EQ(e.kind, ALEA_NAV_COLLISION);
+    ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 60, &e), -1);
+    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_INVALID_STATE);
+    alea_ray_navigator_destroy(nav);
+
+    /* A second claimant between the guard and cell 2's next surface
+     * prevents certifying the extension. Short flights remain available. */
+    int lo = alea_plane_surface(model->sys, 4, 0, 1, 0, -25);
+    int hi = alea_plane_surface(model->sys, 5, 0, 1, 0, -25.01);
+    alea_node_id_t strip = alea_intersection(model->sys, alea_halfspace(model->sys, lo, 1),
+                                             alea_halfspace(model->sys, hi, -1));
+    ASSERT(alea_add_cell(model->sys, 3, strip, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    nav = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(nav);
+    ASSERT_EQ(alea_ray_navigator_restart(nav, origin, direction, &loc), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 5, &e), 0);
+    ASSERT_EQ(e.kind, ALEA_NAV_DISTANCE_LIMIT);
+    ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 60, &e), -1);
+    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_INVALID_STATE);
+    alea_ray_navigator_destroy(nav);
+    mcnp_model_destroy(model);
+}
+
+TEST(persistent_navigator_interval_ends_at_the_stored_boundary) {
+    /* In binary64, 0.7 + (2.9 - 0.7) rounds one ULP past the second plane. */
+    const char deck[] = "Two boundaries\n1 1 -1 -1\n2 1 -1 1 -2\n3 0 2\n\n"
+                        "1 px 0.7\n2 px 2.9\n\nm1 1001 1\n";
+    mcnp_model_t* model = mcnp_load_string(deck, sizeof(deck)-1);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_surface_set_boundary(model->sys, 2, ALEA_BOUNDARY_VACUUM), 0);
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(nav);
+    const double origin[] = {0,0,0}, direction[] = {1,0,0};
+    alea_nav_location_t loc;
+    alea_nav_event_t e;
+    ASSERT_EQ(alea_ray_navigator_set_validation_mode(nav, ALEA_NAV_VALIDATE_INTERVAL), 0);
+    ASSERT_EQ(alea_ray_navigator_restart(nav, origin, direction, &loc), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 4, &e), 0);
+    ASSERT_EQ(e.kind, ALEA_NAV_BOUNDARY);
+    ASSERT_EQ(e.position[0], 0.7);
+    ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 4, &e), 0);
+    ASSERT_EQ(e.kind, ALEA_NAV_VACUUM);
+    ASSERT_EQ(e.surface_id, 2);
+    ASSERT_EQ(e.position[0], 2.9);
+    alea_ray_navigator_destroy(nav);
+    mcnp_model_destroy(model);
+}
+
 TEST(persistent_navigator_interval_finds_thin_hidden_gap) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -1058,6 +1226,107 @@ TEST(persistent_navigator_interval_finds_thin_hidden_gap) {
     ASSERT_EQ(event.after.kind, ALEA_NAV_GAP);
     alea_ray_navigator_destroy(navigator);
     alea_destroy(sys);
+}
+
+TEST(hier_batch_resolves_thin_void_and_undefined_fill_in_local_coordinates) {
+    /* World y advances, but every interior world x rounds onto plane 2.
+     * A midpoint retry can therefore pick cell 11 even after finding both
+     * crossings. The local ray has a distinct distance for each plane. */
+    const double offset = 0x1p21, width = 0x1p-33;
+    for (int has_void = 0; has_void <= 1; ++has_void) {
+        char deck[320];
+        snprintf(deck, sizeof(deck),
+            "Translated fill\n1 0 -1 fill=7 (2097152 0 0)\n"
+            "11 1 -1 -2 u=7\n12 1 -1 3 u=7\n%s\n"
+            "1 s 2097152 0 0 256\n2 px 0\n3 px %.17g\n\nm1 1001 1\n",
+            has_void ? "13 0 2 -3 u=7\n" : "", width);
+        mcnp_model_t* model = mcnp_load_string(deck, strlen(deck));
+        ASSERT_NOT_NULL(model);
+        alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+        ASSERT_NOT_NULL(batch);
+        alea_raycast_batch_options_t options = {
+            .struct_size = sizeof(options),
+            .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_SURFACES |
+                      ALEA_RAY_BATCH_RESOLUTION_FLAGS
+        };
+        for (int sign = -1; sign <= 1; sign += 2) {
+            double origin[] = {offset - sign * 48, -sign * 64, 0};
+            double direction[] = {sign * 3, sign * 4, 0};
+            ASSERT_EQ(alea_raycast_hier_batch(model->sys, origin, direction, 1, 160,
+                                              &options, batch), 0);
+            ASSERT_EQ(alea_raycast_batch_segment_count(batch), 3);
+            const int* cells = alea_raycast_batch_cell_ids(batch);
+            ASSERT_EQ(cells[0], sign > 0 ? 11 : 12);
+            ASSERT_EQ(cells[1], has_void ? 13 : 1);
+            ASSERT_EQ(cells[2], sign > 0 ? 12 : 11);
+            ASSERT_EQ(alea_raycast_batch_material_ids(batch)[1], 0);
+            ASSERT_EQ(alea_raycast_batch_resolution_flags(batch)[1],
+                      has_void ? 0 : ALEA_RESOLVE_UNDEFINED_FILL);
+            ASSERT_EQ(alea_raycast_batch_t_enter(batch)[1], sign > 0 ? 80 : (48 - width) / 0.6);
+            ASSERT_EQ(alea_raycast_batch_t_exit(batch)[1], sign > 0 ? (48 + width) / 0.6 : 80);
+            ASSERT_EQ(alea_raycast_batch_enter_surface_ids(batch)[1], sign > 0 ? 2 : 3);
+            ASSERT_EQ(alea_raycast_batch_exit_surface_ids(batch)[1], sign > 0 ? 3 : 2);
+        }
+        alea_raycast_batch_result_destroy(batch);
+        mcnp_model_destroy(model);
+    }
+}
+
+TEST(substep_fill_keeps_order_and_stops_validated_transport) {
+    const double t = 0x1.4p20, width = 0x1p-34;
+    for (int filled = 0; filled <= 1; ++filled) {
+        alea_system_t* sys = alea_create();
+        ASSERT_NOT_NULL(sys);
+        int outer = alea_sphere_surface(sys, 1, 0, 0, 0, 2*t);
+        int left = alea_plane_surface(sys, 31, 1, 0, 0, 0);
+        int right = alea_plane_surface(sys, 12, 1, 0, 0, -width);
+        int material = alea_add_material(sys, 1);
+        int parent = alea_add_cell(sys, 100, alea_halfspace(sys,outer,-1),
+                                   ALEA_MATERIAL_VOID,0,0);
+        ASSERT(parent >= 0);
+        ASSERT_EQ(alea_set_fill(sys,parent,7,0),0);
+        ASSERT(alea_add_cell(sys,10,alea_halfspace(sys,left,-1),material,-1,7) >= 0);
+        ASSERT(alea_add_cell(sys,20,alea_halfspace(sys,right,1),material,-1,7) >= 0);
+        if (filled) {
+            alea_node_id_t strip = alea_intersection(sys,alea_halfspace(sys,left,1),
+                                                     alea_halfspace(sys,right,-1));
+            ASSERT(alea_add_cell(sys,30,strip,material,-1,7) >= 0);
+        }
+        for (int sign = -1; sign <= 1; sign += 2) {
+            double origin[] = {-sign*t,0,0}, direction[] = {sign,0,0};
+            alea_ray_substep_fill_t gap;
+            ASSERT_EQ(alea_ray_diagnose_substep_fill(sys, origin, direction, t, &gap), !filled);
+            if (filled) continue;
+            ASSERT_EQ(gap.parent_cell_id,100);
+            ASSERT_EQ(gap.fill_universe,7);
+            ASSERT_EQ(gap.enter_surface_id,sign > 0 ? 31 : 12);
+            ASSERT_EQ(gap.exit_surface_id,sign > 0 ? 12 : 31);
+            ASSERT_EQ(gap.width,width);
+            ASSERT_EQ(gap.t_enter,t);
+            ASSERT_EQ(gap.t_exit,t);
+            for (int mode = 0; mode <= 2; mode += 2) {
+                alea_ray_navigator_t* nav = alea_ray_navigator_create(sys);
+                alea_nav_location_t loc;
+                alea_nav_event_t event;
+                ASSERT_EQ(alea_ray_navigator_set_validation_mode(nav,mode),0);
+                ASSERT_EQ(alea_ray_navigator_restart(nav,origin,direction,&loc),0);
+                ASSERT_EQ(loc.kind,ALEA_NAV_MATERIAL);
+                ASSERT_EQ(alea_ray_navigator_substep_fill(nav,&gap),0);
+                ASSERT_EQ(alea_ray_navigator_advance(nav,INFINITY,t/2,&event),0);
+                ASSERT_EQ(event.kind,ALEA_NAV_DISTANCE_LIMIT);
+                ASSERT_EQ(alea_ray_navigator_advance(nav,INFINITY,t,&event),0);
+                ASSERT_EQ(event.kind,ALEA_NAV_BOUNDARY);
+                ASSERT_EQ(event.after.kind,ALEA_NAV_UNRESOLVED);
+                ASSERT_EQ(alea_ray_navigator_substep_fill(nav,&gap),1);
+                ASSERT_EQ(gap.enter_surface_id,sign > 0 ? 31 : 12);
+                ASSERT_EQ(gap.exit_surface_id,sign > 0 ? 12 : 31);
+                ASSERT_EQ(gap.width,width);
+                ASSERT_EQ(alea_ray_navigator_advance(nav,INFINITY,1,&event),-1);
+                alea_ray_navigator_destroy(nav);
+            }
+        }
+        alea_destroy(sys);
+    }
 }
 
 TEST(persistent_navigator_interval_preserves_sub_nanometer_overlap) {

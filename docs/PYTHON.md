@@ -41,6 +41,12 @@ Release archives are platform-specific application artifacts rather than
 universal wheels. Their accompanying checksum and `pyalea-manifest.json` can
 be used to verify a download.
 
+For a suspect ray crossing inside a fill, call
+`system.diagnose_substep_fill(ox, oy, oz, dx, dy, dz, t)`. A finding gives
+the parent cell, fill universe, entry and exit surface IDs in flight order,
+rounded distances, and independently computed width. Equal rounded distances
+can enclose a physical gap. The method returns `None` for an inconclusive query.
+
 ## Build locally
 
 Install NumPy and pytest for the selected interpreter, then run:
@@ -53,6 +59,48 @@ make -C bindings/python package PYTHON=python3
 
 Build products remain under `bindings/python/build/`. On Windows, use
 `Makefile.msvc` from an x64 Visual Studio developer prompt.
+
+## Repeated point lookups
+
+```python
+system = pyalea.load_mcnp("geometry.inp")
+owner = system.find_cell_at(x, y, z)  # (cell ID, material ID), or None
+```
+
+`find_cell_at` and `material_at` share the model's point index. They start
+with the spatial hierarchy. After repeated lookups have spent an estimated
+125 ms there, one caller builds the regional index. Its lookup pays the
+build cost and other readers can keep using the hierarchy. The model chooses
+the world box and adds child bounds on demand. A world without a usable box
+continues to use the hierarchy.
+
+Call `system.prepare_point_acceleration()` to pay the build cost up front.
+Geometry and material edits discard the index and restart observation.
+Editing a model requires exclusive access.
+
+Python's `find_cell` uses the hierarchy to preserve its overlap ordering
+and resolution flags.
+
+## Repeated finite ray batches
+
+```python
+system.prepare_ray_acceleration()
+segments = system.raycast_hier_fast_batch(origins, directions, t_max=1000, include_surfaces=False)
+```
+
+`raycast_hier_fast_batch(..., t_max=distance, include_surfaces=False)` also
+works on a freshly loaded model. During a costly batch, it can prepare
+hierarchy recovery lists while retaining the rows already traced. If you
+expect sustained finite-ray work, call `prepare_ray_acceleration()` once.
+Subsequent eligible calls on the same model reuse the index. The build can
+delay the first result substantially.
+
+The method derives a box from bounded world cells. To specify the working
+volume, pass `bounds=(xmin, xmax, ymin, ymax, zmin, zmax)` during preparation.
+Each segment reports entry and exit distance, cell, material, density and
+resolution flags. The default `include_surfaces=True`, path requests and
+unbounded rays use hierarchy traversal. Finish active queries before preparing
+or editing. Call preparation again after edits to accelerate the updated geometry.
 
 ## Paged geometry validation
 

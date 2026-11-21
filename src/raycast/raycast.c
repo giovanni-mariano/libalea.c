@@ -12,6 +12,8 @@
 #include "util/ray_profile.h"
 #include "raycast.h"
 #include "ray_traversal.h"
+#include "regional/interval_index.h"
+#include "ray_substep.h"
 #include "core/alea_occurrence.h"
 #include "alea.h"
 #include "ray_intersect.h"
@@ -104,14 +106,20 @@ int alea_ray_init(alea_ray_t* ray,
     return (len > RAY_EPSILON) ? 0 : -1;
 }
 
-void alea_ray_init_normalized(alea_ray_t* ray,
-                              double ox, double oy, double oz,
-                              double dx, double dy, double dz) {
+static void ray_init_parametric(alea_ray_t* ray,
+                                double ox, double oy, double oz,
+                                double dx, double dy, double dz) {
     ray->ox = ox; ray->oy = oy; ray->oz = oz;
     ray->dx = dx; ray->dy = dy; ray->dz = dz;
     ray->inv_dx = 1.0 / dx;
     ray->inv_dy = 1.0 / dy;
     ray->inv_dz = 1.0 / dz;
+}
+
+void alea_ray_init_normalized(alea_ray_t* ray,
+                              double ox, double oy, double oz,
+                              double dx, double dy, double dz) {
+    ray_init_parametric(ray, ox, oy, oz, dx, dy, dz);
 }
 
 /* Sample beyond the rounding uncertainty of O + t D. Near a small cell,
@@ -496,11 +504,11 @@ typedef struct {
 
 /* BVH batch callback: test surface intersections for a leaf node */
 static void bvh_surface_batch_callback(const uint32_t* surface_indices,
-                                        uint16_t count, void* userdata) {
+                                        uint32_t count, void* userdata) {
     bvh_raycast_ctx_t* ctx = (bvh_raycast_ctx_t*)userdata;
     if (ctx->failed) return;
 
-    for (uint16_t si = 0; si < count; si++) {
+    for (uint32_t si = 0; si < count; si++) {
         uint32_t surface_idx = surface_indices[si];
         const alea_surface_entry_t* surf = &ctx->sys->surfaces.data[surface_idx];
         const alea_primitive_entry_t* prim = &ctx->sys->primitives.data[surf->primitive_id];
@@ -979,7 +987,7 @@ void alea_raycast_tree_primitives(alea_system_t* sys,
                                     double t_min, double t_max,
                                     alea_raycast_result_t* result,
                                     const alea_matrix_t* local_to_world) {
-    if (alea_interrupted()) { result->breakpoint_failed = 1; return; }
+    if (alea_ray_interrupted(result)) { result->breakpoint_failed = 1; return; }
     if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
     if (result->breakpoint_nearest_only && result->hits.count)
         t_max = fmin(t_max, result->hits.data[0].t);
@@ -1095,7 +1103,7 @@ static void raycast_indexed_surface_scan(alea_system_t* sys,
                       plane_index->cards == count;
     if (use_planes) recovery_plane_candidates(plane_index, ray, t_min, t_max, plane_mask);
     for (size_t i = 0; i < count; i++) {
-        if ((i & 1023) == 0 && alea_interrupted()) {
+        if ((i & 1023) == 0 && alea_ray_interrupted(result)) {
             result->breakpoint_failed = 1;
             return;
         }
@@ -1189,7 +1197,7 @@ static void recovery_roots_build(alea_system_t* sys, const alea_ray_t* ray,
     entry->roots_attempted = true;
     if (count < 128 || count > RECOVERY_ROOT_BUDGET / (4*sizeof(recovery_root_t))) return;
     const double lo = result->breakpoint_t_min;
-    const double hi = result->breakpoint_t_max;
+    const double hi = fmax(result->breakpoint_t_max, result->recovery_root_limit);
     if (!isfinite(lo) || !isfinite(hi) || lo < 0 || hi < lo) return;
     uint64_t plane_mask[RECOVERY_PLANE_MASK_WORDS];
     bool use_planes = plane_index && plane_index->cards == count;
@@ -1224,7 +1232,7 @@ static void recovery_roots_build(alea_system_t* sys, const alea_ray_t* ray,
     double quad_roots[RAY_QUADRIC_LANES][2];
     size_t n=0, ne=0;
     for (size_t i=0;i<count;i++) {
-        if ((i&1023)==0 && alea_interrupted()) { free(roots); free(exceptional); return; }
+        if ((i&1023)==0 && alea_ray_interrupted(result)) { free(roots); free(exceptional); return; }
         if (use_planes && !(plane_mask[i/64] & (UINT64_C(1) << (i%64)))) continue;
         double single[4];
         const double* t = single;
@@ -1268,7 +1276,7 @@ static void recovery_roots_build(alea_system_t* sys, const alea_ray_t* ray,
                 if (!grown) { free(roots); free(exceptional); return; }
                 roots=grown; capacity=next; root_bytes=next*sizeof(*roots);
             }
-            roots[n++]=(recovery_root_t){t[j],(uint32_t)i,(uint32_t)j};
+            roots[n++]=recovery_root_make(t[j], (uint32_t)i, j);
             RAY_PROFILE_COUNT(roots_retained_by_type[type]);
         }
     }
@@ -1299,6 +1307,10 @@ static void recovery_roots_build(alea_system_t* sys, const alea_ray_t* ray,
     entry->roots_hi=hi;
     entry->roots_complete=true;
     table->root_bytes+=root_bytes+exceptional_bytes;
+#ifdef ALEA_RAY_PROFILE
+    if (alea_ray_profile.enabled && table->root_bytes > alea_ray_profile.peak_root_bytes)
+        alea_ray_profile.peak_root_bytes = table->root_bytes;
+#endif
     RAY_PROFILE_COUNT(recovery_root_builds);
 }
 
@@ -1312,7 +1324,7 @@ static void raycast_indexed_surface_hits_cached(alea_system_t* sys,
     const alea_ray_t* ray, const uint32_t* indices, size_t count,
     double t_min, double t_max, alea_raycast_result_t* result,
     const alea_matrix_t* local_to_world, const recovery_plane_index_t* plane_index) {
-    if (alea_interrupted()) { result->breakpoint_failed = 1; return; }
+    if (alea_ray_interrupted(result)) { result->breakpoint_failed = 1; return; }
     if (result->hits.count) t_max = fmin(t_max, result->hits.data[0].t);
     recovery_context_key_t key;
     recovery_context_entry_t* entry = NULL;
@@ -1346,6 +1358,7 @@ static void raycast_indexed_surface_hits_cached(alea_system_t* sys,
             RAY_PROFILE_COUNT(recovery_root_queries);
             const recovery_root_t* root=recovery_root_first(entry,t_min,t_max,result->breakpoint_t_min);
             if (root) { RAY_PROFILE_COUNT(cached_root_candidates); }
+            else if (!entry->exceptional_count) { RAY_PROFILE_COUNT(cached_empty_windows); }
             recovery_root_t selected;
             if (root) { selected=*root; root=&selected; }
             /* Merge exceptional roots by original card/root order, retaining
@@ -1362,7 +1375,7 @@ static void raycast_indexed_surface_hits_cached(alea_system_t* sys,
                 result->surfaces_tested++;
                 for (int j=0;j<nr;j++) if (t[j]>=t_min && t[j]<=t_max &&
                         t[j]>nextafter(result->breakpoint_t_min,INFINITY)) {
-                    recovery_root_t candidate={t[j],ordinal,(uint32_t)j};
+                    recovery_root_t candidate = recovery_root_make(t[j], ordinal, j);
                     if (!root || recovery_root_compare(&candidate,root)<0) {
                         selected=candidate;
                         root=&selected;
@@ -1370,17 +1383,17 @@ static void raycast_indexed_surface_hits_cached(alea_system_t* sys,
                 }
             }
             if (root) {
-                const alea_surface_entry_t* surf=&sys->surfaces.data[indices[root->ordinal]];
+                const alea_surface_entry_t* surf=&sys->surfaces.data[indices[root->order / 4u]];
                 alea_primitive_type_t type=sys->primitives.data[surf->primitive_id].type;
                 alea_primitive_data_t data;
                 if (!raycast_primitive_copy_payload(sys,surf->primitive_id,type,&data)) {
                     result->breakpoint_failed=1;
                     return;
                 }
-                alea_ray_hit_t hit={.t=root->t,.surface_id=surf->mc_surface_id,
+                alea_ray_hit_t hit={.t=recovery_root_distance(root),.surface_id=surf->mc_surface_id,
                                     .primitive_id=surf->primitive_id};
                 double x,y,z;
-                alea_ray_point_at(ray,root->t,&x,&y,&z);
+                alea_ray_point_at(ray,hit.t,&x,&y,&z);
                 primitive_normal_at(type,&data,x,y,z,&hit.nx,&hit.ny,&hit.nz);
                 if (local_to_world) boundary_event_world_normal(local_to_world,
                     hit.nx,hit.ny,hit.nz,&hit.nx,&hit.ny,&hit.nz);
@@ -1393,7 +1406,7 @@ static void raycast_indexed_surface_hits_cached(alea_system_t* sys,
     }
     raycast_indexed_surface_scan(sys, ray, indices, count, t_min, t_max,
                                 result, local_to_world, NULL, plane_index);
-    if (entry && !result->breakpoint_failed && !alea_interrupted()) {
+    if (entry && !result->breakpoint_failed && !alea_ray_interrupted(result)) {
         entry->key = key;
         entry->lo = t_min;
         entry->hi = t_max;
@@ -1459,13 +1472,19 @@ static void raycast_universe_surfaces(alea_system_t* sys,
 
     /* Readers that prepare only a subset of caches must not observe a list
      * while another thread is still publishing the optional recovery cache. */
-    if (result->breakpoint_nearest_only &&
+    if ((result->breakpoint_nearest_only || result->transport_fill_filter) &&
         alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_SURFACES) &&
-        univ->recovery_surfaces) {
+        univ->recovery_surfaces &&
+        (result->breakpoint_nearest_only || univ->recovery_surfaces_exact)) {
+        size_t first = result->hits.count;
         raycast_indexed_surface_hits(sys, local_ray, univ->recovery_surfaces,
             univ->recovery_surface_count, t_min, t_max, result, local_to_world, NULL,
             univ->recovery_planes);
-        return;
+        if (result->breakpoint_nearest_only || result->breakpoint_failed ||
+            result->hits.count == first) return;
+        /* A card hit may represent several tree leaves. Replay this occurrence
+         * to preserve all raw hits, including their order and budget cost. */
+        result->hits.count = first;
     }
 
     /* Optional scratch is bounded and scoped to this occurrence, so distinct
@@ -1477,7 +1496,7 @@ static void raycast_universe_surfaces(alea_system_t* sys,
         univ->cell_indices.count > 1 && seen_bytes <= 1024 * 1024
         ? calloc(seen_bytes, 1) : NULL;
     for (size_t c = 0; c < univ->cell_indices.count; c++) {
-        if (alea_interrupted()) { result->breakpoint_failed = 1; break; }
+        if (alea_ray_interrupted(result)) { result->breakpoint_failed = 1; break; }
         if (result->breakpoint_hit_limit && result->breakpoint_failed) break;
         size_t cell_idx = univ->cell_indices.data[c];
         if (cell_idx >= alea_vec_count(&sys->cells)) {
@@ -1502,9 +1521,6 @@ static void raycast_universe_surfaces(alea_system_t* sys,
 static bool system_has_lattice_cells(const alea_system_t* sys);
 static bool system_has_fill_cells(const alea_system_t* sys);
 static int dedup_sorted_hits(alea_raycast_result_t* result);
-static void transform_ray_inverse(const alea_matrix_t* mat,
-                                  const alea_ray_t* ray,
-                                  alea_ray_t* local_ray);
 static void raycast_lattice_rect(alea_system_t* sys,
                                  const alea_ray_t* ray,
                                  const alea_cell_entry_t* lat_cell,
@@ -1566,7 +1582,7 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
         if (!univ || univ->cell_indices.count == 0) continue;
 
         alea_ray_t local_ray;
-        transform_ray_inverse(&placement->transform, ray, &local_ray);
+        alea_ray_transform_inverse(&placement->transform, ray, &local_ray);
 
         size_t max_candidates = univ->cell_indices.count;
         if (max_candidates > (size_t)stats->max_universe_cells) {
@@ -1657,9 +1673,9 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
     return 0;
 }
 
-static void transform_ray_inverse(const alea_matrix_t* mat,
-                                  const alea_ray_t* ray,
-                                  alea_ray_t* local_ray) {
+void alea_ray_transform_inverse(const alea_matrix_t* mat,
+                                const alea_ray_t* ray,
+                                alea_ray_t* local_ray) {
     double ox = ray->ox;
     double oy = ray->oy;
     double oz = ray->oz;
@@ -1669,9 +1685,10 @@ static void transform_ray_inverse(const alea_matrix_t* mat,
     double dy = mat->inv[4] * ray->dx + mat->inv[5] * ray->dy + mat->inv[6] * ray->dz;
     double dz = mat->inv[8] * ray->dx + mat->inv[9] * ray->dy + mat->inv[10] * ray->dz;
 
-    if (alea_ray_init(local_ray, ox, oy, oz, dx, dy, dz) != 0) {
-        alea_ray_init_normalized(local_ray, ox, oy, oz, ray->dx, ray->dy, ray->dz);
-    }
+    /* Keep O_local + t D_local at the inverse image of the world point.
+     * Rounded rotation cards can change |D_local|. All walker limits, roots
+     * and lattice steps use the original world-distance parameter t. */
+    ray_init_parametric(local_ray, ox, oy, oz, dx, dy, dz);
 }
 
 static void raycast_lattice_rect(alea_system_t* sys,
@@ -1718,7 +1735,7 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
     if (count == 0) return;
 
     alea_ray_t parent_local_ray;
-    transform_ray_inverse(accumulated, global_ray, &parent_local_ray);
+    alea_ray_transform_inverse(accumulated, global_ray, &parent_local_ray);
 
     /* Siblings can place the same universe in exactly the same frame. Once a
      * traversal leaves an existing nearest hit untouched, repeating it with
@@ -1730,7 +1747,7 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
         alea_system_query_cache_ready(sys, ALEA_CACHE_HIER_SPATIAL);
 
     for (size_t i = 0; i < count; i++) {
-        if ((i & 1023) == 0 && alea_interrupted()) {
+        if ((i & 1023) == 0 && alea_ray_interrupted(result)) {
             result->breakpoint_failed = 1;
             return;
         }
@@ -1776,7 +1793,7 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
 
         alea_matrix_t fill_transform;
         const alea_matrix_t* matrix = prepared_matrices && cell_idx <= UINT32_MAX
-            ? alea_hier_spatial_get_cell_fill_matrix(sys, (uint32_t)cell_idx) : NULL;
+            ? alea_cell_fill_matrix(sys, (uint32_t)cell_idx) : NULL;
         if (!matrix && cell->fill_transform > 0) {
             const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
             if (!tr ||
@@ -1797,7 +1814,7 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
         }
 
         alea_ray_t fill_local_ray;
-        transform_ray_inverse(&fill_accumulated, global_ray, &fill_local_ray);
+        alea_ray_transform_inverse(&fill_accumulated, global_ray, &fill_local_ray);
 
         RAY_PROFILE_COUNT(fill_descents);
         raycast_universe_surfaces(
@@ -3163,12 +3180,12 @@ typedef struct {
     /* Particle transport must reject a containment retry that never verifies
      * its selected owner; general ray queries retain legacy compatibility. */
     bool fail_unverified_ownership;
-    /* Opaque rendering resolves ownership just inside each crossing. It does
-     * not certify the rest of an interval for integration or diagnostics. */
-    bool entry_only;
+    size_t recovery_proof_budget;
+    bool require_interior_sample;
     /* Navigation-only policy for competing hierarchy depths. Legacy ray
      * queries leave this zero and retain their ordinary numerical ordering. */
     double boundary_distance_tolerance;
+    const alea_ray_root_lookup_t* root_lookup;
 } alea_ray_walk_t;
 
 #define ALEA_NAV_DEFAULT_BOUNDARY_DISTANCE_TOLERANCE 1.0e-6
@@ -3545,6 +3562,15 @@ static double raycast_cell_surfaces(alea_system_t* sys,
     return closest_t;
 }
 
+int alea_ray_cell_surface_at(alea_system_t* sys, const alea_ray_t* local,
+                             uint32_t cell, double t, alea_raycast_result_t* result,
+                             uint32_t* primitive) {
+    int surface;
+    const double hit = raycast_cell_surfaces(sys, local, &sys->cells.data[cell],
+        nextafter(t, -INFINITY), nextafter(t, INFINITY), result, &surface, primitive);
+    return hit == t ? surface : -1;
+}
+
 static void boundary_event_add_local_surface(alea_raycast_boundary_event_t* event,
                                              int surface_id) {
     if (!event || surface_id <= 0) return;
@@ -3604,15 +3630,22 @@ static void boundary_interval_capture_owner(
         interval->owner_occurrence_key != 0;
 }
 
-static void boundary_event_collect_cell_surfaces_at(
+static bool boundary_event_collect_cell_surfaces_at(
     alea_system_t* sys, const alea_ray_t* local_ray,
     const alea_cell_entry_t* cell, double t, alea_raycast_boundary_event_t* event) {
-    if (!cell || !cell->surface_indices) return;
+    if (!cell || !cell->surface_indices || !cell->surface_index_count) return false;
+    bool scanned = true;
     for (size_t i = 0; i < cell->surface_index_count; i++) {
         const uint32_t surface_index = cell->surface_indices[i];
-        if (surface_index >= alea_vec_count(&sys->surfaces)) continue;
+        if (surface_index >= alea_vec_count(&sys->surfaces)) {
+            scanned = false;
+            continue;
+        }
         const alea_surface_entry_t* surface = &sys->surfaces.data[surface_index];
-        if (surface->primitive_id >= alea_vec_count(&sys->primitives)) continue;
+        if (surface->primitive_id >= alea_vec_count(&sys->primitives)) {
+            scanned = false;
+            continue;
+        }
         const alea_primitive_entry_t* primitive =
             &sys->primitives.data[surface->primitive_id];
         alea_primitive_data_t data;
@@ -3628,6 +3661,7 @@ static void boundary_event_collect_cell_surfaces_at(
             if (fabs(hits[hit] - t) <= RAY_EPSILON)
                 boundary_event_add_local_surface(event, surface->mc_surface_id);
     }
+    return scanned && event->local_surface_complete;
 }
 
 static void boundary_event_collect_local_group(
@@ -3644,7 +3678,7 @@ static void boundary_event_collect_local_group(
             continue;
         }
         alea_ray_t local_ray;
-        transform_ray_inverse(&entry->transform, ray, &local_ray);
+        alea_ray_transform_inverse(&entry->transform, ray, &local_ray);
         boundary_event_collect_cell_surfaces_at(
             sys, &local_ray, &sys->cells.data[entry->cell_index], event->t, event);
         if (event->surface_id > 0 &&
@@ -3661,9 +3695,12 @@ static void boundary_event_collect_local_group(
             alea_ray_point_at(
                 &local_ray, event->t, &event->local_point[0],
                 &event->local_point[1], &event->local_point[2]);
-            event->local_direction[0] = local_ray.dx;
-            event->local_direction[1] = local_ray.dy;
-            event->local_direction[2] = local_ray.dz;
+            /* The event reports a unit direction in its active frame. */
+            double length = sqrt(local_ray.dx * local_ray.dx + local_ray.dy * local_ray.dy +
+                                 local_ray.dz * local_ray.dz);
+            event->local_direction[0] = local_ray.dx / length;
+            event->local_direction[1] = local_ray.dy / length;
+            event->local_direction[2] = local_ray.dz / length;
             event->provenance_flags |= ALEA_BOUNDARY_PROVENANCE_ACTIVE_FRAME;
         }
     }
@@ -3914,7 +3951,7 @@ static double raycast_hier_path_ancestor_surfaces(alea_system_t* sys,
         if (!cell->surface_indices || cell->surface_index_count == 0) continue;
 
         alea_ray_t local_ray;
-        transform_ray_inverse(&entry->transform, ray, &local_ray);
+        alea_ray_transform_inverse(&entry->transform, ray, &local_ray);
 
         int surface_id = -1;
         uint32_t prim_id = ALEA_PRIMITIVE_ID_INVALID;
@@ -4001,13 +4038,13 @@ static int raycast_undefined_fill_crossing(
     /* Lattice element transitions retain their dedicated DDA handling. */
     if (parent->is_lattice || cell->fill_universe <= 0) return 0;
     const alea_matrix_t* fill =
-        alea_hier_spatial_get_cell_fill_matrix(sys, parent->cell_index);
+        alea_cell_fill_matrix(sys, parent->cell_index);
     if (!fill) return -1;
     alea_matrix_t transform;
     alea_matrix_multiply(&transform, &parent->transform, fill);
     if (!alea_matrix_invert(&transform)) return -1;
     alea_ray_t local_ray;
-    transform_ray_inverse(&transform, ray, &local_ray);
+    alea_ray_transform_inverse(&transform, ray, &local_ray);
     undefined_fill_crossing_t query = {
         .sys = sys, .ray = &local_ray, .result = result,
         .t_min = t_min, .closest_t = t_max, .surface_id = -1,
@@ -4194,7 +4231,7 @@ static int visit_lattice_ancestor_surface(uint32_t cell_index,
     }
     const alea_cell_entry_t* cell = &ctx->sys->cells.data[cell_index];
     alea_ray_t local_ray;
-    transform_ray_inverse(transform, ctx->ray, &local_ray);
+    alea_ray_transform_inverse(transform, ctx->ray, &local_ray);
     int surface_id = -1;
     uint32_t primitive_id = ALEA_PRIMITIVE_ID_INVALID;
     int tested_before = ctx->result ? ctx->result->surfaces_tested : 0;
@@ -4408,7 +4445,7 @@ static int visit_lattice_entry(uint32_t placement_index,
         &ctx->sys->cells.data[lattice_cell_index];
     if (ctx->result) ctx->result->lattice_entry_candidates++;
     alea_ray_t local_ray;
-    transform_ray_inverse(transform, ctx->ray, &local_ray);
+    alea_ray_transform_inverse(transform, ctx->ray, &local_ray);
     lattice_entry_query_t entry = lattice_first_valid_entry(
         ctx->sys, &local_ray, ctx->ray, cell, placement_index,
         fmax(ctx->t_min, placement_enter),
@@ -4605,6 +4642,7 @@ static int find_cell_from_existing_hier_path(alea_system_t* sys,
 }
 
 static int find_cell_from_root_universe(alea_system_t* sys,
+                                        const alea_ray_root_lookup_t* lookup,
                                         double px, double py, double pz,
                                         int crossed_surface_id,
                                         int* out_material_id,
@@ -4615,8 +4653,10 @@ static int find_cell_from_root_universe(alea_system_t* sys,
                                         alea_hier_ray_path_t* out_path) {
     if (!sys) return -2;
 
-    int root_cell = alea_hier_spatial_find_ordered_cell_in_universe(
-        sys, 0, px, py, pz, crossed_surface_id);
+    int root_cell = lookup ? lookup->find(lookup->context, px, py, pz, crossed_surface_id) : -1;
+    if (root_cell < 0)
+        root_cell = alea_hier_spatial_find_ordered_cell_in_universe(
+            sys, 0, px, py, pz, crossed_surface_id);
     if (root_cell < 0) return root_cell == -2 ? -2 : -1;
     if ((size_t)root_cell >= alea_vec_count(&sys->cells)) return -2;
 
@@ -4782,6 +4822,14 @@ static int find_closest_intersection(alea_system_t* sys,
     return 0;
 }
 
+static double ray_interval_probe(double enter, double exit) {
+    /* DBL_MAX denotes an open ray. A fraction of that sentinel can exceed
+     * every model bound even when the next physical step is short. */
+    if (exit == DBL_MAX)
+        return fmax(enter + 0.381966011250105, nextafter(enter, INFINITY));
+    return enter + 0.381966011250105 * (exit - enter);
+}
+
 /* A failed boundary-side lookup must be retried inside the very next
  * geometric interval. Probing a fraction of a stale cell's proposed span can
  * jump across other cells (or the whole model). Find only the nearest crossing
@@ -4823,8 +4871,11 @@ static int raycast_recovery_sample(alea_system_t* sys, const alea_ray_t* ray,
         table->entries[i].lo=INFINITY;
         table->entries[i].hi=-INFINITY;
     }
+    crossings.cancelled = owner->cancelled;
+    crossings.cancel_user = owner->cancel_user;
     crossings.recovery_context=table;
     crossings.recovery_context_warmup = table ? 0 : 16;
+    crossings.recovery_root_limit = owner->recovery_root_limit;
     const int rc = alea_raycast_validation_breakpoints_reuse_nocache(
         sys, ray, t_current, t_max, 1, &crossings);
     double next = t_max;
@@ -4843,7 +4894,7 @@ static int raycast_recovery_sample(alea_system_t* sys, const alea_ray_t* ray,
     crossings.recovery_context = NULL;
     alea_raycast_result_free(&crossings);
     if (rc != 0) return -1;
-    *out_sample = t_current + 0.381966011250105 * (next - t_current);
+    *out_sample = ray_interval_probe(t_current, next);
     if (!(*out_sample > t_current && *out_sample < next)) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
             "ray boundary recovery has no representable interior sample");
@@ -4873,6 +4924,62 @@ static void record_owner_probe_recovery(const alea_hier_ray_path_t* path,
     if (path) boundary_event_path_keys_at(path, path->count - 1, &e->occurrence, NULL);
 }
 #endif
+
+/* A midpoint rounded back onto an endpoint in world space cannot establish
+ * that the claimed occurrence excludes the open interval. */
+static bool interior_excludes_owner(alea_system_t* sys, const alea_ray_t* ray,
+                                    const alea_hier_ray_path_t* path, int cell_idx,
+                                    double lo, double sample, double hi) {
+    if (cell_idx < 0 || !path->count ||
+        path->entries[path->count - 1].cell_index != (uint32_t)cell_idx) return false;
+    double x, y, z, ax, ay, az, bx, by, bz;
+    alea_ray_point_at(ray, sample, &x, &y, &z);
+    alea_ray_point_at(ray, lo, &ax, &ay, &az);
+    alea_ray_point_at(ray, hi, &bx, &by, &bz);
+    if ((x == ax && y == ay && z == az) || (x == bx && y == by && z == bz)) return false;
+    return alea_hier_spatial_check_path_containment(
+        sys, path, path->count - 1, x, y, z, NULL, NULL, NULL) == 0;
+}
+
+typedef struct {
+    int cell_index;
+    double covered;
+} root_owner_span_t;
+
+static int check_root_owner_span(void* context, const alea_ray_coverage_interval_t* interval) {
+    root_owner_span_t* span = context;
+    if (interval->t_enter != span->covered || interval->kind != ALEA_RAY_COVERAGE_UNIQUE ||
+        interval->owner_count != 1 || interval->owners[0].cell_index != span->cell_index)
+        return 1;
+    span->covered = interval->t_exit;
+    return 0;
+}
+
+/* Recovery bounds can be roots of a different cell's infinite surfaces.
+ * In a terminal world cell, the proposed exit is already the nearest local
+ * crossing. Accept that exit only if independent all-owner coverage confirms
+ * the same cell throughout the entire extension. */
+static int verify_recovered_root_span(alea_system_t* sys, const alea_ray_t* ray,
+        int cell_index, int guard_surface, double lo, double hi, size_t budget) {
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    if (cell->universe_id != 0 || alea_cell_entry_is_container(cell) ||
+        !cell->surface_indices || !cell->surface_index_count || hi == DBL_MAX ||
+        cell_references_surface_id(sys, cell, guard_surface))
+        return 0;
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    root_owner_span_t span = {.cell_index = cell_index, .covered = lo};
+    int rc = alea_ray_coverage_sweep_strict_reuse_nocache(sys, ray, lo, hi, budget,
+            NULL, &scratch, check_root_owner_span, &span);
+    alea_raycast_result_free(&scratch);
+    if (rc >= 0) return span.covered == hi;
+    /* The optional proof can extend beyond the actual requested flight.
+     * An inconclusive sweep keeps the guard, allowing shorter advances. */
+    alea_error_t error = alea_get_last_error();
+    if (error != ALEA_ERR_INVALID_STATE && error != ALEA_ERR_OVERFLOW) return -1;
+    alea_clear_error_detail();
+    return 0;
+}
 
 static int raycast_cell_aware_resume(alea_system_t* sys,
                                      const alea_ray_t* ray,
@@ -4906,7 +5013,7 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
 
     while (t_current < effective_t_max && step_budget-- > 0 &&
            state->iterations_remaining-- > 0) {
-        if (alea_interrupted()) {
+        if (alea_ray_interrupted(result)) {
             alea_set_error_detail(ALEA_ERR_INTERRUPTED, "ray traversal interrupted");
             return -1;
         }
@@ -4919,11 +5026,11 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
             ? pending_lattice_entry_sample
             : raycast_forward_sample_t(ray, t_current);
         pending_lattice_entry_sample = -1.0;
+        bool incident_lattice = current_path->count >= 2 &&
+            current_path->entries[current_path->count - 2].is_lattice;
         int resolve_attempt = 0;
         alea_ray_hit_t recovery_hit = {.t = effective_t_max};
-        /* Snapshot of the attempt-0 outcome. The retry is accepted only when
-         * it verifies strictly better; otherwise this state is restored, so a
-         * failed retry can never degrade the pre-verification answer. */
+        /* Preserve the initial path in case recovery finds only a container. */
         int saved_valid = 0;
         int saved_cell_idx = -1;
         int saved_cell_id = -1;
@@ -5009,7 +5116,9 @@ resolve_cell:;
         /* In hierarchical mode, avoid a full root-to-deepest lookup when the
          * sampled point remains inside the cached placement path. */
         if (!found_via_neighbor && use_hier_lookup && prev_cell_idx >= 0 &&
-            (size_t)prev_cell_idx < alea_vec_count(&sys->cells)) {
+            current_path->count > 0 &&
+            current_path->entries[current_path->count - 1].cell_index ==
+                (uint32_t)prev_cell_idx) {
             result->owner_path_attempts++;
             const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
             double px, py, pz;
@@ -5053,7 +5162,7 @@ resolve_cell:;
             if (use_hier_lookup && cell_idx < 0) {
                 result->owner_root_queries++;
                 cell_idx = find_cell_from_root_universe(
-                    sys, px, py, pz, prev_surface_id,
+                    sys, state->root_lookup, px, py, pz, prev_surface_id,
                     &material_id, &density,
                     &cell_transform, &lattice_cell_index,
                     &lattice_transform, current_path);
@@ -5102,13 +5211,21 @@ resolve_cell:;
             bevent.is_synthetic_lattice_boundary = false;
             alea_matrix_identity(&bevent.transform);
         }
-        bool containment_unverified = state->entry_only;
+        bool can_prove_interval = !resolve_attempt && use_hier_lookup && need_boundary_event &&
+            enter_event.has_physical_surface && !state->fail_unverified_ownership;
+        const double crossing_t_min = nextafter(t_current, INFINITY);
+        int adjacent_surface = -1;
+        uint32_t adjacent_primitive = ALEA_PRIMITIVE_ID_INVALID;
+        bool in_lattice_element = current_path->count >= 2 &&
+            current_path->entries[current_path->count - 2].is_lattice;
+        bool left_lattice = incident_lattice && !in_lattice_element;
+        bool containment_unverified = false;
         if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
             sys->cells.data[cell_idx].surface_indices) {
             alea_ray_t local_ray;
             const alea_ray_t* surface_ray = ray;
             if (use_hier_lookup) {
-                transform_ray_inverse(&cell_transform, ray, &local_ray);
+                alea_ray_transform_inverse(&cell_transform, ray, &local_ray);
                 surface_ray = &local_ray;
             }
             /* Instrumentation: attribute this cell's surface tests and record
@@ -5123,13 +5240,22 @@ resolve_cell:;
             int surfaces_tested_before = result->surfaces_tested;
 
             uint32_t terminal_prim_id = ALEA_PRIMITIVE_ID_INVALID;
-            const double crossing_t_min = nextafter(t_current, INFINITY);
+            bool check_adjacent = can_prove_interval && t_sample >= crossing_t_min &&
+                ((lattice_cell_index < 0 && current_path->count == 2) || in_lattice_element || incident_lattice);
             t_next = raycast_cell_surfaces(sys, surface_ray,
                                            &sys->cells.data[cell_idx],
-                                           crossing_t_min, effective_t_max,
+                                           check_adjacent ? t_current : crossing_t_min, effective_t_max,
                                            result,
                                            &hit_surface_id,
                                            &terminal_prim_id);
+            if (check_adjacent && t_next == crossing_t_min) {
+                /* Keep the ordinary next hit available if the two crossings
+                 * cannot be distinguished in their placement. */
+                adjacent_surface = hit_surface_id;
+                adjacent_primitive = terminal_prim_id;
+                t_next = raycast_cell_surfaces(sys, surface_ray, &sys->cells.data[cell_idx],
+                    crossing_t_min, effective_t_max, result, &hit_surface_id, &terminal_prim_id);
+            }
             result->terminal_surfaces_tested +=
                 result->surfaces_tested - surfaces_tested_before;
             if (need_boundary_event) {
@@ -5146,7 +5272,7 @@ resolve_cell:;
                 const alea_cell_entry_t* lattice_cell =
                     &sys->cells.data[lattice_cell_index];
                 alea_ray_t lattice_ray;
-                transform_ray_inverse(&lattice_transform, ray, &lattice_ray);
+                alea_ray_transform_inverse(&lattice_transform, ray, &lattice_ray);
                 int lattice_surface_id = -1;
                 uint32_t lattice_prim_id = ALEA_PRIMITIVE_ID_INVALID;
                 int lattice_tested_before = result->surfaces_tested;
@@ -5332,7 +5458,15 @@ resolve_cell:;
         /* A recovery probe is valid only up to its independently enumerated
          * next crossing. In particular a lattice DDA step must not overrun a
          * nearby physical ancestor boundary. */
-        if (resolve_attempt && recovery_hit.t < t_next) {
+        bool clip_to_recovery = resolve_attempt && recovery_hit.t < t_next;
+        if (clip_to_recovery && state->recovery_proof_budget && recovery_hit.surface_id > 0 &&
+            cell_idx >= 0 && current_path->count == 1 && bevent.has_physical_surface) {
+            int verified = verify_recovered_root_span(sys, ray, cell_idx, recovery_hit.surface_id,
+                t_current, t_next, state->recovery_proof_budget);
+            if (verified < 0) return -1;
+            if (verified) clip_to_recovery = false;
+        }
+        if (clip_to_recovery) {
             t_next = recovery_hit.t;
             hit_surface_id = recovery_hit.surface_id;
             next_enter_surface_id = 0;
@@ -5367,26 +5501,49 @@ resolve_cell:;
          * clamp so the terminal segment stops at the user's max_distance. */
         if (t_next > effective_t_max) t_next = effective_t_max;
 
-        /* A rounding-safe boundary sample can overrun a very thin interval.
-         * Re-resolve inside its known next crossing, without searching the
-         * rest of the model or moving the entry distance forward. Navigation
-         * must also resolve the pre-crossing owner: its forward sample can
-         * select the next cell when restarting very close to a boundary. */
-        if ((state->entry_only || state->fail_unverified_ownership) &&
-            t_sample >= t_next) {
+        /* A forward ownership sample can overrun a very thin interval.
+         * Try to prove ownership between the known crossings before retrying
+         * at an interior sample. Keep the original entry distance. */
+        bool slab_verified = false;
+        if (adjacent_surface > 0 && crossing_t_min < t_next &&
+            alea_ray_resolve_short_interval(sys, ray, enter_event.primitive_id, &enter_event.transform,
+                adjacent_primitive, &cell_transform, t_current, crossing_t_min, true, left_lattice, current_path)) {
+            slab_verified = true;
+            t_next = crossing_t_min;
+            hit_surface_id = next_enter_surface_id = adjacent_surface;
+            bevent = (alea_raycast_boundary_event_t){.t = t_next, .surface_id = hit_surface_id,
+                .primitive_id = adjacent_primitive, .transform = cell_transform, .has_physical_surface = true,
+                .active_cell_id = -1, .active_depth = -1, .active_universe_id = -1};
+        } else if (can_prove_interval && t_sample >= t_next && bevent.has_physical_surface) {
+            slab_verified = alea_ray_resolve_short_interval(sys, ray, enter_event.primitive_id,
+                &enter_event.transform, bevent.primitive_id, &bevent.transform, t_current, t_next,
+                false, left_lattice, current_path);
+        }
+        if (slab_verified) {
+            cell_idx = (int)current_path->entries[current_path->count - 1].cell_index;
+            const alea_cell_entry_t* owner = &sys->cells.data[cell_idx];
+            cell_id = owner->mc_cell_id;
+            material_id = owner->material_id;
+            density = owner->density;
+        } else if (t_sample >= t_next) {
             const double sample = t_current + 0.5 * (t_next - t_current);
-            if (resolve_attempt >= 2 ||
-                !(sample > t_current && sample < t_next)) {
+            const bool strict = state->require_interior_sample || state->fail_unverified_ownership;
+            if (resolve_attempt < 2 && sample > t_current && sample < t_next &&
+                (strict || (use_hier_lookup && !resolve_attempt &&
+                            interior_excludes_owner(sys, ray, current_path, cell_idx,
+                                                    t_current, sample, t_next)))) {
+                recovery_hit.t = t_next;
+                recovery_hit.surface_id = hit_surface_id;
+                recovery_hit.primitive_id = need_boundary_event ? bevent.primitive_id : ALEA_PRIMITIVE_ID_INVALID;
+                t_sample = sample;
+                resolve_attempt++;
+                goto resolve_cell;
+            }
+            if (strict) {
                 alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                     "ray crossing has no stable interior sample");
                 return -1;
             }
-            recovery_hit.t = t_next;
-            recovery_hit.surface_id = hit_surface_id;
-            recovery_hit.primitive_id = bevent.primitive_id;
-            t_sample = sample;
-            resolve_attempt++;
-            goto resolve_cell;
         }
 
         /* Verify the resolved cell actually owns this segment. No surface of
@@ -5396,15 +5553,14 @@ resolve_cell:;
          * transitions (non-convex cells re-entered across their own surface)
          * and on-boundary sign noise picking a coincident sibling cell. On
          * failure, redo the resolution once, sampling at the probe point. */
-        if (!state->entry_only &&
+        if (!slab_verified &&
             cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
             (t_next - t_current > 1e-6 || resolve_attempt > 0)) {
             /* Probe at an irrational fraction of the interval, not the exact
              * midpoint: a segment spanning lattice elements has periodic
              * internal boundaries, and its midpoint can land exactly on one,
              * where containment is numerically undefined. */
-            double t_probe = t_current +
-                0.381966011250105 * (t_next - t_current);
+            double t_probe = ray_interval_probe(t_current, t_next);
             double mx, my, mz;
             alea_ray_point_at(ray, t_probe, &mx, &my, &mz);
             const alea_cell_entry_t* seg_cell = &sys->cells.data[cell_idx];
@@ -5424,15 +5580,13 @@ resolve_cell:;
                     sys, current_path, current_path->count - 1, mx, my, mz,
                     NULL, NULL, NULL) > 0;
             }
-            /* A retry must not climb the hierarchy: a shallower answer than
-             * attempt-0's is a "found nothing deeper" fallback (e.g. a fill
-             * container over an unsupported lattice region), not a
-             * correction. Equal-depth siblings (overlaps, re-crossed
-             * quartics) and deeper resolutions are legitimate. */
-            int depth_ok = !saved_valid || !use_hier_lookup ||
-                           current_path->count >= saved_path.count;
-            if (!probe_ok || !depth_ok) {
-                if (resolve_attempt < 2 && probe_ok == 0 && depth_ok) {
+            /* Leaving a fill can lead directly to a shallower terminal cell.
+             * Accept it only when the new path verifies its ownership. */
+            bool unverified_ascent = saved_valid && use_hier_lookup &&
+                current_path->count < saved_path.count &&
+                (!probe_ok || alea_cell_entry_is_container(seg_cell));
+            if (!probe_ok || unverified_ascent) {
+                if (resolve_attempt < 2 && !probe_ok && !unverified_ascent) {
                     /* Re-resolve inside the next geometric interval, whose
                      * crossings are independent of the possibly stale owner. */
                     if (!saved_valid) {
@@ -5444,15 +5598,38 @@ resolve_cell:;
                         saved_t_next = t_next;
                         saved_hit_surface_id = hit_surface_id;
                         saved_next_enter_surface_id = next_enter_surface_id;
-                        saved_bevent = bevent;
+                        if (need_boundary_event) saved_bevent = bevent;
                         ray_path_copy_live(&saved_path, current_path);
                         result->path_snapshot_copies++;
                         result->path_snapshot_entries +=
                             (uint64_t)saved_path.count;
                     }
                     resolve_attempt++;
-                    if (raycast_recovery_sample(sys, ray, t_current,
-                            effective_t_max, &t_sample, &recovery_hit, result) != 0) return -1;
+                    /* The active path already supplies an upper bound. A
+                     * broader search may miss this placement's surface and
+                     * select a point beyond the interval being repaired. */
+#ifdef ALEA_RAY_PROFILE
+                    double recovery_start = alea_ray_profile.enabled ? alea_monotonic_seconds() : 0;
+#endif
+                    int recovery_rc = raycast_recovery_sample(sys, ray, t_current,
+                            t_next, &t_sample, &recovery_hit, result);
+#ifdef ALEA_RAY_PROFILE
+                    if (alea_ray_profile.enabled) {
+                        double elapsed = alea_monotonic_seconds() - recovery_start;
+                        const alea_universe_t* u = alea_get_universe(sys, seg_cell->universe_id);
+                        if (u) {
+                            ray_profile_universe* row = &alea_ray_profile.universes[u - sys->universes.data];
+                            row->recoveries++;
+                            row->recovery_seconds += elapsed;
+                        }
+                    }
+#endif
+                    if (recovery_rc != 0) return -1;
+                    if (recovery_hit.t == t_next) {
+                        recovery_hit.surface_id = hit_surface_id;
+                        if (need_boundary_event)
+                            recovery_hit.primitive_id = bevent.primitive_id;
+                    }
 #ifdef ALEA_RAY_PROFILE
                     ray_profile_owner_t source = RAY_OWNER_PATH_DESCENT;
                     if (result->owner_path_hits != path_hits_before) source = RAY_OWNER_CACHED_PATH;
@@ -5464,13 +5641,7 @@ resolve_cell:;
 #endif
                     goto resolve_cell;
                 }
-                if (saved_valid && !depth_ok) {
-                    /* A retry that climbed the hierarchy is a "found nothing
-                     * deeper" fallback, never a correction: keep attempt 0.
-                     * A depth-consistent retry that merely fails its probe is
-                     * kept as-is — its error is bounded by its own short
-                     * interval, whereas restoring attempt-0 would reinstate
-                     * the full overrun that triggered the retry. */
+                if (unverified_ascent) {
                     cell_idx = saved_cell_idx;
                     cell_id = saved_cell_id;
                     material_id = saved_material_id;
@@ -5642,6 +5813,15 @@ static int alea_ray_walk_next_selected(
  * the pending interval is retained across collision and distance-limit stops.
  * Neither step nor clone publishes a segment vector. */
 struct alea_ray_navigator {
+    interval_index_t* regional_index;
+    regional_worker_t* regional_worker;
+    size_t regional_spans;
+    alea_nav_recovery_stats_t recovery_stats;
+    alea_transport_recovery_seed_t recovery_seed;
+    double recovery_remaining;
+    uint64_t recovered_outgoing; /* Nonzero while using the incident material. */
+    alea_uint32_vec_t action_surfaces;
+    bool window_end;
     alea_system_t* sys;
     alea_nav_validation_mode_t validation_mode;
     size_t max_interval_breakpoints;
@@ -5656,12 +5836,23 @@ struct alea_ray_navigator {
     alea_nav_location_t location;
     bool initialized;
     bool have_pending;
+    alea_ray_substep_fill_t substep_fill;
     bool awaiting_action;
     bool leaked;
     alea_boundary_type_t action_type;
     int action_surface_id;
     double action_normal[3];
 };
+
+static bool transport_span_verified(alea_ray_navigator_t* nav,
+        const alea_nav_location_t* incident, int enter_surface, uint64_t* outgoing);
+
+int alea_ray_navigator_recovery_stats(const alea_ray_navigator_t* nav,
+                                      alea_nav_recovery_stats_t* out) {
+    if (!nav || !out) return -1;
+    *out = nav->recovery_stats;
+    return 0;
+}
 
 static alea_nav_location_t navigator_interval_location(
     const alea_ray_selected_interval_t* interval) {
@@ -5731,12 +5922,29 @@ static alea_nav_location_kind_t navigator_verify_point(
 }
 
 static alea_nav_location_kind_t navigator_verify_interval(
-    const alea_ray_navigator_t* navigator) {
+    alea_ray_navigator_t* navigator) {
     const alea_ray_selected_interval_t* interval = &navigator->pending;
-    if (!isfinite(interval->t_enter)) return ALEA_NAV_UNRESOLVED;
+    if (navigator->substep_fill.enter_surface_id || !isfinite(interval->t_enter))
+        return ALEA_NAV_UNRESOLVED;
+    alea_nav_location_kind_t kind = ALEA_NAV_UNRESOLVED;
     const double span = interval->t_exit - interval->t_enter;
-    return navigator_verify_point(navigator, interval->t_enter +
-        0.381966011250105 * fmin(span, 1.0));
+    double sample = interval->t_enter + 0.381966011250105 * fmin(span, 1.0);
+    if (nextafter(interval->t_enter, INFINITY) < interval->t_exit) {
+        kind = navigator_verify_point(navigator, sample);
+    } else if (interval->resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL) {
+        alea_ray_substep_fill_t gap;
+        if (alea_substep_fill_at(navigator->sys, &navigator->ray,
+                interval->t_enter, &gap) == 1 && gap.parent_cell_id == interval->cell_id)
+            navigator->substep_fill = gap;
+    }
+    if (navigator->regional_worker && (navigator->validation_mode == ALEA_NAV_VALIDATE_STRICT ||
+        navigator->validation_mode == ALEA_NAV_VALIDATE_TRANSPORT) &&
+        (kind == ALEA_NAV_OVERLAP || kind == ALEA_NAV_UNRESOLVED) &&
+        interval->owner_provenance_complete && !interval->resolution_flags &&
+        alea_ray_verify_short_owner(navigator->sys, &navigator->ray,
+            interval->t_enter, interval->t_exit, sample, interval->path))
+        return interval->material_id ? ALEA_NAV_MATERIAL : ALEA_NAV_VOID;
+    return kind;
 }
 
 #define ALEA_NAV_DEFAULT_FLIGHT_BREAKPOINTS 8192
@@ -5800,11 +6008,119 @@ static int navigator_validate_flight(alea_ray_navigator_t* navigator,
     return count < 0 || check.failed ? -1 : 0;
 }
 
+/* A Boolean union can keep the same owner across a reflective, white,
+ * periodic or vacuum card. Preserve these actions inside a selected span.
+ * In a gap the native navigator considers world-frame surfaces; inside
+ * a cell it tests cards along the concrete incident placement path. */
+static int navigator_check_action_surfaces(const alea_ray_navigator_t* nav,
+        double start, regional_nav_span_t* span) {
+    if (!nav->action_surfaces.count) return 0;
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+    const alea_hier_ray_path_t* path = span->path;
+    int frames = path->count ? path->count : 1;
+    for (int i = 0; i < frames; ++i) {
+        const alea_cell_entry_t* cell = path->count
+            ? &nav->sys->cells.data[path->entries[i].cell_index] : NULL;
+        const alea_matrix_t* frame = cell ? &path->entries[i].transform : &identity;
+        const uint32_t* indices = cell ? cell->surface_indices : nav->action_surfaces.data;
+        size_t count = cell ? cell->surface_index_count : nav->action_surfaces.count;
+        alea_ray_t local;
+        alea_ray_transform_inverse(frame, &nav->ray, &local);
+        for (size_t j = 0; j < count; ++j) {
+            const alea_surface_entry_t* surface = &nav->sys->surfaces.data[indices[j]];
+            if (surface->boundary_type == ALEA_BOUNDARY_TRANSMISSIVE) continue;
+            uint32_t id = surface->primitive_id;
+            if (id >= nav->sys->primitives.count) return -1;
+            alea_primitive_type_t type = nav->sys->primitives.data[id].type;
+            alea_primitive_data_t data;
+            if (!raycast_primitive_copy_payload(nav->sys, id, type, &data)) return -1;
+            double roots[4];
+            int n = ray_intersect_primitive(&local, type, &data, roots);
+            for (int k = 0; k < n; ++k) {
+                if (roots[k] > start && roots[k] < span->end) {
+                    span->end = roots[k];
+                    span->surface = surface->mc_surface_id;
+                    span->primitive = id;
+                    span->exit_frame = *frame;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/* A search-window end certifies a span, but carries no physical action.
+ * When a request reaches it, repeat the search with a longer lookahead. */
+static int navigator_regional_span(alea_ray_navigator_t* nav, double start, double limit) {
+    regional_nav_span_t span = {.path=&nav->walk.current_path};
+    if (alea_regional_first_span(nav->regional_worker, &nav->ray, start, limit,
+                                 &nav->scratch, &span) || navigator_check_action_surfaces(nav, start, &span)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Regional navigator could not establish the next span");
+        return -1;
+    }
+    ++nav->regional_spans;
+    const alea_cell_entry_t* cell = span.cell >= 0 ? &nav->sys->cells.data[span.cell] : NULL;
+    nav->window_end = span.end == limit;
+    nav->pending = (alea_ray_selected_interval_t){
+        .t_enter=start, .t_exit=span.end, .cell_index=span.cell,
+        .cell_id=cell ? cell->mc_cell_id : -1, .material_id=cell ? cell->material_id : 0,
+        .density=cell ? cell->density : 0, .resolution_flags=span.resolution_flags,
+        .path=span.path, .exit_surface_id=span.surface,
+        .exit_event={.t=span.end, .surface_id=span.surface, .primitive_id=span.primitive,
+            .has_physical_surface=span.surface > 0, .is_synthetic_lattice_boundary=span.surface == 0,
+            .transform=span.exit_frame}
+    };
+    boundary_interval_capture_owner(span.path, &nav->pending);
+    if (!nav->window_end && span.surface < 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Regional navigator cannot attribute a crossing");
+        return -1;
+    }
+    return 0;
+}
+
+int alea_ray_navigator_use_regional(alea_ray_navigator_t* nav, interval_index_t* idx) {
+    if (!nav || nav->initialized || nav->regional_worker ||
+        !alea_regional_nav_ready(idx, nav->sys)) return -1;
+    nav->regional_worker = alea_regional_worker_create(idx);
+    if (!nav->regional_worker) return -1;
+    for (size_t i = 0; i < nav->sys->surfaces.count; ++i) {
+        if (nav->sys->surfaces.data[i].boundary_type != ALEA_BOUNDARY_TRANSMISSIVE &&
+            alea_vec_push(&nav->action_surfaces, (uint32_t)i, uint32_t)) {
+            alea_regional_worker_destroy(nav->regional_worker);
+            nav->regional_worker = NULL;
+            alea_vec_free(&nav->action_surfaces);
+            return -1;
+        }
+    }
+    alea_regional_index_retain(idx);
+    nav->regional_index = idx;
+    return 0;
+}
+
+void alea_ray_navigator_regional_counts(const alea_ray_navigator_t* nav,
+                                       size_t* spans, size_t* visits) {
+    *spans = nav->regional_spans;
+    *visits = nav->regional_worker ? alea_regional_worker_candidate_tree_visits(nav->regional_worker) : 0;
+}
+
+static bool navigator_index_current(const alea_ray_navigator_t* nav) {
+    return !nav->regional_index || alea_regional_nav_ready(nav->regional_index, nav->sys);
+}
+
 static int navigator_load_interval(alea_ray_navigator_t* navigator) {
-    const int rc = alea_ray_walk_next_selected_mode(
-        navigator->sys, &navigator->ray, DBL_MAX, &navigator->scratch,
-        &navigator->walk, &navigator->pending,
-        navigator->validation_mode != ALEA_NAV_VALIDATE_FAST);
+    navigator->walk.recovery_proof_budget = navigator->max_interval_breakpoints;
+    int rc;
+    if (navigator->regional_worker) {
+        double start = navigator->current_t;
+        double limit = fmax(start + 64.0, nextafter(start, INFINITY));
+        rc = navigator_regional_span(navigator, start, limit);
+    } else {
+        rc = alea_ray_walk_next_selected_mode(
+            navigator->sys, &navigator->ray, DBL_MAX, &navigator->scratch,
+            &navigator->walk, &navigator->pending,
+            navigator->validation_mode != ALEA_NAV_VALIDATE_FAST);
+    }
     if (rc < 0) return -1;
     if (rc == 2) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
@@ -5837,14 +6153,19 @@ void alea_ray_navigator_destroy(alea_ray_navigator_t* navigator) {
     if (!navigator) return;
     alea_raycast_result_free(&navigator->scratch);
     alea_raycast_result_free(&navigator->validation_scratch);
+    alea_vec_free(&navigator->action_surfaces);
+    alea_regional_worker_destroy(navigator->regional_worker);
+    alea_prepared_queries_destroy(navigator->regional_index);
     free(navigator);
 }
 
 int alea_ray_navigator_set_validation_mode(
     alea_ray_navigator_t* navigator, alea_nav_validation_mode_t mode) {
-    if (!navigator || (mode != ALEA_NAV_VALIDATE_FAST &&
+    if (!navigator || !navigator_index_current(navigator) || (mode != ALEA_NAV_VALIDATE_FAST &&
                        mode != ALEA_NAV_VALIDATE_STRICT &&
-                       mode != ALEA_NAV_VALIDATE_INTERVAL)) return -1;
+                       mode != ALEA_NAV_VALIDATE_INTERVAL && mode != ALEA_NAV_VALIDATE_TRANSPORT)) return -1;
+    if (mode == ALEA_NAV_VALIDATE_TRANSPORT && navigator->recovered_outgoing) return 0;
+    navigator->recovered_outgoing = 0;
     navigator->validation_mode = mode;
     if (navigator->initialized && navigator->have_pending) {
         navigator->location = navigator_interval_location(&navigator->pending);
@@ -5852,6 +6173,15 @@ int alea_ray_navigator_set_validation_mode(
             navigator->location.kind = navigator_verify_interval(navigator);
     }
     return 0;
+}
+
+int alea_ray_navigator_substep_fill(const alea_ray_navigator_t* navigator,
+                                    alea_ray_substep_fill_t* out) {
+    if (!navigator || !out) return -1;
+    if (!navigator->initialized || !navigator->substep_fill.enter_surface_id ||
+        navigator->location.kind != ALEA_NAV_UNRESOLVED) return 0;
+    *out = navigator->substep_fill;
+    return 1;
 }
 
 int alea_ray_navigator_set_interval_budget(
@@ -5881,13 +6211,14 @@ int alea_ray_navigator_restart(alea_ray_navigator_t* navigator,
                                const double position[3],
                                const double direction[3],
                                alea_nav_location_t* location) {
-    if (!navigator || !position || !direction || !location ||
+    if (!navigator || !navigator_index_current(navigator) || !position || !direction || !location ||
         !isfinite(position[0]) || !isfinite(position[1]) ||
         !isfinite(position[2])) return -1;
     alea_ray_t ray;
     if (alea_ray_init(&ray, position[0], position[1], position[2],
                       direction[0], direction[1], direction[2]) != 0 ||
         alea_raycast_ensure_hier_caches(navigator->sys) != 0) return -1;
+    navigator->recovered_outgoing = 0;
     navigator->ray = ray;
     alea_ray_walk_init(&navigator->walk);
     navigator->walk.fail_unverified_ownership = true;
@@ -5895,6 +6226,7 @@ int alea_ray_navigator_restart(alea_ray_navigator_t* navigator,
         navigator->boundary_distance_tolerance;
     alea_raycast_result_clear(&navigator->scratch);
     navigator->scratch.ray = ray;
+    navigator->substep_fill.enter_surface_id = 0;
     navigator->current_t = 0.0;
     navigator->have_pending = false;
     navigator->awaiting_action = false;
@@ -5914,17 +6246,36 @@ alea_ray_navigator_t* alea_ray_navigator_clone(
     alea_ray_navigator_t* copy = malloc(sizeof(*copy));
     if (!copy) return NULL;
     *copy = *navigator;
+    copy->recovery_stats = (alea_nav_recovery_stats_t){0};
     alea_raycast_result_init(&copy->scratch);
     alea_raycast_result_init(&copy->validation_scratch);
     copy->scratch.ray = copy->ray;
-    if (copy->have_pending) copy->pending.path = &copy->walk.current_path;
+    if (copy->regional_index) {
+        copy->regional_worker = NULL;
+        memset(&copy->action_surfaces, 0, sizeof(copy->action_surfaces));
+        alea_regional_index_retain(copy->regional_index);
+        if (!navigator_index_current(copy) ||
+            !(copy->regional_worker = alea_regional_worker_create(copy->regional_index)) ||
+            alea_vec_reserve(&copy->action_surfaces, navigator->action_surfaces.count, uint32_t)) {
+            alea_ray_navigator_destroy(copy);
+            return NULL;
+        }
+        if (navigator->action_surfaces.count) {
+            copy->action_surfaces.count = navigator->action_surfaces.count;
+            memcpy(copy->action_surfaces.data, navigator->action_surfaces.data,
+                   copy->action_surfaces.count * sizeof(uint32_t));
+        }
+        copy->regional_spans = 0;
+    }
+    if (navigator->pending.path) copy->pending.path = &copy->walk.current_path;
     return copy;
 }
 
 int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
                                      const double direction[3]) {
-    if (!navigator || !direction || !navigator->initialized ||
-        navigator->leaked) return -1;
+    if (!navigator || !navigator_index_current(navigator) || !direction || !navigator->initialized ||
+        navigator->leaked || (navigator->substep_fill.enter_surface_id &&
+            navigator->validation_mode != ALEA_NAV_VALIDATE_FAST)) return -1;
     double position[3];
     alea_ray_point_at(&navigator->ray, navigator->current_t,
                       &position[0], &position[1], &position[2]);
@@ -5935,6 +6286,8 @@ int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
     /* A collision keeps the owner. At a reflective/white boundary the old
      * path still identifies the incident side. The walker checks containment
      * of this hint in the new direction before it trusts it. */
+    const uint64_t previous_outgoing = navigator->recovered_outgoing;
+    navigator->recovered_outgoing = 0;
     const int hinted_cell = navigator->have_pending
         ? navigator->pending.cell_index : navigator->walk.prev_cell_idx;
     alea_hier_ray_path_t path;
@@ -5947,6 +6300,7 @@ int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
     ray_path_copy_live(&navigator->walk.current_path, &path);
     navigator->walk.prev_cell_idx = hinted_cell;
     navigator->scratch.ray = ray;
+    navigator->substep_fill.enter_surface_id = 0;
     navigator->current_t = 0.0;
     navigator->have_pending = false;
     navigator->awaiting_action = false;
@@ -5954,6 +6308,8 @@ int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
     navigator->action_surface_id = -1;
     navigator->initialized = false;
     if (navigator_load_interval(navigator) != 0) return -1;
+    if (previous_outgoing && alea_nav_resume_recovery(navigator, &navigator->recovery_seed,
+                                                        &navigator->location)) return -1;
     navigator->initialized = true;
     return 0;
 }
@@ -6011,7 +6367,7 @@ static const alea_surface_entry_t* navigator_periodic_partner(
 int alea_ray_navigator_apply_periodic(alea_ray_navigator_t* navigator,
                                       double out_position[3],
                                       alea_nav_location_t* out_location) {
-    if (!navigator || !out_position || !out_location ||
+    if (!navigator || !navigator_index_current(navigator) || !out_position || !out_location ||
         !navigator->initialized || !navigator->awaiting_action ||
         navigator->action_type != ALEA_BOUNDARY_PERIODIC ||
         navigator->action_surface_id <= 0) return -1;
@@ -6105,24 +6461,101 @@ int alea_ray_navigator_apply_periodic(alea_ray_navigator_t* navigator,
     return 0;
 }
 
+static bool boundary_group_contains(const alea_raycast_boundary_event_t* group, int id) {
+    for (size_t i = 0; i < group->local_surface_count; ++i)
+        if (group->local_surface_ids[i] == id) return true;
+    return false;
+}
+
+/* An entering cell can supply the regional root. On an incident lookup miss,
+ * collect cards from both concrete placements before resolving the action.
+ * Keep all speculative state separate from the particle's pending interval. */
+static bool navigator_two_sided_group(alea_ray_navigator_t* nav,
+        alea_raycast_boundary_event_t* group) {
+    const double t = group->t;
+    alea_hier_ray_path_t outgoing;
+    if (nav->regional_worker) {
+        regional_nav_span_t span = {.path = &outgoing};
+        double limit = fmax(t + 64.0, nextafter(t, INFINITY));
+        ++nav->regional_spans;
+        if (alea_regional_first_span(nav->regional_worker, &nav->ray, t, limit,
+                                     &nav->scratch, &span) || !outgoing.count)
+            return false;
+    } else {
+        alea_ray_walk_t walk = nav->walk;
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+        scratch.ray = nav->ray;
+        alea_ray_selected_interval_t next;
+        int rc = alea_ray_walk_next_selected_mode(nav->sys, &nav->ray, DBL_MAX,
+                                                   &scratch, &walk, &next, true);
+        alea_raycast_result_free(&scratch);
+        if (rc < 0 || rc == 2 || next.t_enter != t || !next.path || !next.path->count)
+            return false;
+        ray_path_copy_live(&outgoing, next.path);
+    }
+    const int index = alea_surface_find(nav->sys, group->surface_id);
+    if (index < 0) return false;
+    const alea_surface_entry_t* selected = &nav->sys->surfaces.data[index];
+    if (selected->primitive_id != group->primitive_id) return false;
+
+    bool found_outgoing = false;
+    const alea_hier_ray_path_t* paths[] = {nav->pending.path, &outgoing};
+    group->local_surface_complete = 1;
+    group->local_surface_count = 0;
+    for (int side = 0; side < 2; ++side) {
+        for (int i = 0; i < paths[side]->count; ++i) {
+            const alea_hier_ray_path_entry_t* entry = &paths[side]->entries[i];
+            if ((size_t)entry->cell_index >= nav->sys->cells.count) return false;
+            alea_ray_t local;
+            alea_ray_transform_inverse(&entry->transform, &nav->ray, &local);
+            alea_raycast_boundary_event_t cards = {.local_surface_complete = 1};
+            if (!boundary_event_collect_cell_surfaces_at(nav->sys, &local,
+                    &nav->sys->cells.data[entry->cell_index], t, &cards))
+                return false;
+            if (side == 1 && boundary_group_contains(&cards, selected->mc_surface_id)) {
+                bool same_frame = memcmp(entry->transform.m, group->transform.m,
+                                         sizeof(group->transform.m)) == 0;
+                if (selected->boundary_type != ALEA_BOUNDARY_TRANSMISSIVE &&
+                    (!same_frame || (i > 0 && selected->boundary_type == ALEA_BOUNDARY_PERIODIC)))
+                    return false;
+                found_outgoing |= same_frame;
+            }
+            for (size_t j = 0; j < cards.local_surface_count; ++j)
+                boundary_event_add_local_surface(group, cards.local_surface_ids[j]);
+        }
+    }
+    return found_outgoing && group->local_surface_complete;
+}
+
 /* Resolve conditions from the incident path, including physical surfaces
  * coincident with a synthetic lattice crossing. Multiple physical actions
  * leave the action normal or destination ambiguous, so stop before moving. */
 static int navigator_boundary_condition(
     alea_ray_navigator_t* navigator,
     const alea_raycast_boundary_event_t* crossing,
-    alea_boundary_type_t* out_type) {
+    bool verify_outgoing, alea_boundary_type_t* out_type) {
     alea_raycast_boundary_event_t group = *crossing;
     if (!navigator->pending.path || navigator->pending.path->count == 0) {
         boundary_event_collect_global_group(navigator->sys, &navigator->ray,
                                             &group);
-    } else if (navigator->validation_mode == ALEA_NAV_VALIDATE_FAST ||
+    } else if (navigator->regional_worker || navigator->validation_mode == ALEA_NAV_VALIDATE_FAST ||
         crossing->is_synthetic_lattice_boundary ||
         !crossing->has_physical_surface) {
         group.has_physical_surface = true;
         group.is_synthetic_lattice_boundary = false;
         boundary_event_collect_local_group(navigator->sys, &navigator->ray,
             navigator->pending.path, &group);
+    }
+    if ((navigator->regional_worker || verify_outgoing) &&
+        navigator->pending.path && navigator->pending.path->count &&
+        crossing->surface_id > 0 && !boundary_group_contains(&group, crossing->surface_id)) {
+        if (!navigator_two_sided_group(navigator, &group)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                "cannot verify particle boundary %d on both paths at t=%.17g",
+                crossing->surface_id, crossing->t);
+            return -1;
+        }
     }
     if (crossing->surface_id > 0 &&
         (!group.local_surface_complete || group.local_surface_count == 0)) {
@@ -6185,7 +6618,7 @@ static int navigator_rpp_action_face_unique(
     if (!raycast_primitive_copy_payload(navigator->sys, crossing->primitive_id,
                                         primitive->type, &data)) return 0;
     alea_ray_t local_ray;
-    transform_ray_inverse(&crossing->transform, &navigator->ray, &local_ray);
+    alea_ray_transform_inverse(&crossing->transform, &navigator->ray, &local_ray);
     double p[3];
     alea_ray_point_at(&local_ray, crossing->t, &p[0], &p[1], &p[2]);
     const double mins[3] = {
@@ -6205,10 +6638,138 @@ static int navigator_rpp_action_face_unique(
     return faces == 1;
 }
 
+/* A recovery must be bounded by physical crossings on the original ray.
+ * Sweep a short window on both sides so the entry and exit are observed
+ * breakpoints, not merely the clipped ends of a query. */
+typedef struct {
+    double lo, hi;
+    alea_ray_coverage_kind_t defect;
+    uint64_t incident, outgoing, overlap_other;
+    bool before, inside, after;
+} transport_coverage_t;
+
+static uint64_t unique_terminal_key(const alea_ray_coverage_interval_t* row) {
+    if (row->kind != ALEA_RAY_COVERAGE_UNIQUE || !row->owner_count) return 0;
+    const alea_ray_coverage_owner_t* leaf = row->owners;
+    for (size_t i = 1; i < row->owner_count; ++i)
+        if (row->owners[i].depth > leaf->depth) leaf = row->owners + i;
+    return leaf->occurrence_key;
+}
+
+static int verify_transport_row(void* context, const alea_ray_coverage_interval_t* row) {
+    transport_coverage_t* p = context;
+    if (row->t_exit == p->lo) p->before = unique_terminal_key(row) == p->incident;
+    if (row->t_enter == p->hi) {
+        p->outgoing = unique_terminal_key(row);
+        p->after = p->outgoing != 0;
+    }
+    if (row->t_enter != p->lo || row->t_exit != p->hi || row->kind != p->defect)
+        return 0;
+    if (row->kind != ALEA_RAY_COVERAGE_OVERLAP) {
+        p->inside = true;
+        return 0;
+    }
+    size_t leaves = 0;
+    bool has_incident = false;
+    for (size_t i = 0; i < row->owner_count; ++i) {
+        const alea_ray_coverage_owner_t* owner = &row->owners[i];
+        bool parent = false;
+        for (size_t j = 0; j < row->owner_count; ++j)
+            if (row->owners[j].parent_occurrence_key == owner->occurrence_key) parent = true;
+        if (parent) continue;
+        if (owner->resolution_flags) return 0;
+        ++leaves;
+        if (owner->occurrence_key == p->incident) has_incident = true;
+        else p->overlap_other = owner->occurrence_key;
+    }
+    p->inside = leaves == 2 && has_incident;
+    return 0;
+}
+
+static bool transport_span_verified(alea_ray_navigator_t* nav,
+        const alea_nav_location_t* incident, int enter_surface, uint64_t* outgoing) {
+    const double lo = nav->pending.t_enter, hi = nav->pending.t_exit;
+    const double pad = ALEA_NAV_TRANSPORT_RECOVERY_CM;
+    const int exit_surface = nav->pending.exit_surface_id;
+    if (!(hi > lo && hi - lo <= pad) || nav->window_end || exit_surface <= 0 ||
+        !incident->occurrence_key || nav->substep_fill.enter_surface_id) return false;
+    transport_coverage_t proof = {.lo = lo, .hi = hi, .incident = incident->occurrence_key};
+    switch (nav->location.kind) {
+    case ALEA_NAV_GAP: proof.defect = ALEA_RAY_COVERAGE_GAP; break;
+    case ALEA_NAV_UNDEFINED_FILL: proof.defect = ALEA_RAY_COVERAGE_UNDEFINED_FILL; break;
+    case ALEA_NAV_OVERLAP: proof.defect = ALEA_RAY_COVERAGE_OVERLAP; break;
+    default: return false;
+    }
+    /* A zero entry ID denotes continuing a proven interval after scattering. */
+    const double start = fmax(0, lo - pad);
+    alea_raycast_result_t* raw = &nav->validation_scratch;
+    raw->transport_fill_filter = true;
+    int rows = alea_ray_coverage_sweep_strict_reuse_nocache(nav->sys, &nav->ray,
+            start, hi + pad, nav->max_interval_breakpoints, NULL, raw,
+            verify_transport_row, &proof);
+    raw->transport_fill_filter = false;
+    if (rows < 0) {
+        alea_clear_error_detail();
+        return false;
+    }
+    if (proof.defect == ALEA_RAY_COVERAGE_UNDEFINED_FILL &&
+        !(nav->pending.resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL)) return false;
+    if (proof.defect == ALEA_RAY_COVERAGE_OVERLAP &&
+        nav->pending.owner_occurrence_key != incident->occurrence_key &&
+        nav->pending.owner_occurrence_key != proof.overlap_other) return false;
+    if (!enter_surface && proof.overlap_other && proof.overlap_other != nav->recovery_seed.other)
+        return false;
+    if (!proof.inside || !proof.after || (enter_surface && !proof.before) ||
+        (proof.overlap_other && proof.outgoing != proof.overlap_other &&
+         (enter_surface || proof.outgoing != proof.incident))) return false;
+    bool saw_entry = !enter_surface, saw_exit = false;
+    for (size_t i = 0; i < raw->hits.count; ++i) {
+        const alea_ray_hit_t* hit = &raw->hits.data[i];
+        if (hit->t < lo || hit->t > hi) continue;
+        if (hit->t > lo && hit->t < hi) return false;
+        int index = alea_surface_find(nav->sys, hit->surface_id);
+        if (index < 0 || nav->sys->surfaces.data[index].boundary_type != ALEA_BOUNDARY_TRANSMISSIVE)
+            return false;
+        if (hit->t == lo && hit->surface_id == enter_surface) saw_entry = true;
+        if (hit->t == hi && hit->surface_id == exit_surface) saw_exit = true;
+    }
+    if (!saw_entry || !saw_exit) return false;
+    alea_boundary_type_t condition;
+    if (navigator_boundary_condition(nav, &nav->pending.exit_event, true, &condition) ||
+        condition != ALEA_BOUNDARY_TRANSMISSIVE) {
+        alea_clear_error_detail();
+        return false;
+    }
+    *outgoing = proof.outgoing;
+    return true;
+}
+
+void alea_nav_get_recovery_seed(const alea_ray_navigator_t* nav, alea_transport_recovery_seed_t* seed) {
+    *seed = nav->recovered_outgoing ? nav->recovery_seed : (alea_transport_recovery_seed_t){0};
+}
+
+int alea_nav_resume_recovery(alea_ray_navigator_t* nav, const alea_transport_recovery_seed_t* seed,
+                             alea_nav_location_t* location) {
+    uint64_t outgoing;
+    nav->recovery_seed = *seed;
+    if (nav->location.kind != seed->defect ||
+        !transport_span_verified(nav, &seed->incident, 0, &outgoing) ||
+        (outgoing != seed->other && outgoing != seed->incident.occurrence_key)) {
+        nav->initialized = false;
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "cannot verify the new flight from a recovered interval");
+        return -1;
+    }
+    nav->recovered_outgoing = outgoing;
+    nav->recovery_remaining = nav->pending.t_exit - nav->current_t;
+    *location = nav->location = seed->incident;
+    return 0;
+}
+
 int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
                                double collision_distance, double max_distance,
                                alea_nav_event_t* event) {
-    if (!navigator || !event || !navigator->initialized || navigator->leaked ||
+    if (!navigator || !navigator_index_current(navigator) || !event || !navigator->initialized || navigator->leaked ||
         navigator->awaiting_action ||
         !(collision_distance > 0.0) || isnan(collision_distance) ||
         !isfinite(max_distance) || !(max_distance > 0.0)) return -1;
@@ -6227,34 +6788,52 @@ int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
     }
     if (!navigator->have_pending && navigator_load_interval(navigator) != 0)
         return -1;
-    const double boundary_distance =
+    while (navigator->window_end && navigator->pending.t_exit - navigator->current_t <=
+            fmin(max_distance, collision_distance)) {
+        const double start = navigator->pending.t_enter, end = navigator->pending.t_exit;
+        const double limit = end + (end - start);
+        const uint64_t owner = navigator->pending.owner_occurrence_key;
+        const int cell = navigator->pending.cell_index;
+        if (!(limit > end) || !isfinite(limit) ||
+            navigator_regional_span(navigator, start, limit) ||
+            navigator->pending.t_exit < end || navigator->pending.cell_index != cell ||
+            navigator->pending.owner_occurrence_key != owner) {
+            navigator->initialized = false;
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Regional navigator cannot extend the certified span");
+            return -1;
+        }
+    }
+    const double boundary_distance = navigator->recovered_outgoing ? navigator->recovery_remaining :
         navigator->pending.t_exit - navigator->current_t;
     if (!(boundary_distance > 0.0)) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "particle navigator boundary did not advance");
         return -1;
     }
+    const bool reaches_boundary = boundary_distance <= max_distance &&
+                                  boundary_distance <= collision_distance;
     if (navigator->validation_mode == ALEA_NAV_VALIDATE_INTERVAL) {
-        const double flight = fmin(boundary_distance,
-                                   fmin(collision_distance, max_distance));
-        if (navigator_validate_flight(navigator,
-                                      navigator->current_t + flight) != 0)
+        /* Reconstructing the absolute root from its rounded flight distance
+         * can move the validation endpoint one ULP beyond the boundary. */
+        double end = reaches_boundary ? navigator->pending.t_exit
+            : navigator->current_t + fmin(collision_distance, max_distance);
+        if (navigator_validate_flight(navigator, end) != 0)
             return -1;
     }
+    const uint64_t recovered_outgoing = navigator->recovered_outgoing;
     alea_nav_event_t next = {0};
     next.before = navigator->location;
     next.after = navigator->location;
     next.surface_id = -1;
     next.boundary_type = ALEA_BOUNDARY_TRANSMISSIVE;
-    if (boundary_distance <= max_distance &&
-        boundary_distance <= collision_distance) {
+    if (reaches_boundary) {
         next.kind = ALEA_NAV_BOUNDARY;
         next.distance = boundary_distance;
         const alea_raycast_boundary_event_t* crossing =
             &navigator->pending.exit_event;
         next.surface_id = crossing->surface_id;
         if (navigator_boundary_condition(navigator, crossing,
-                &next.boundary_type) != 0) return -1;
+                recovered_outgoing != 0, &next.boundary_type) != 0) return -1;
         if (next.surface_id > 0 &&
             next.boundary_type != ALEA_BOUNDARY_TRANSMISSIVE &&
             next.boundary_type != ALEA_BOUNDARY_VACUUM &&
@@ -6292,20 +6871,61 @@ int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
             navigator->action_surface_id = next.surface_id;
             memcpy(navigator->action_normal, next.normal,
                    sizeof(navigator->action_normal));
-        } else if (navigator_load_interval(navigator) != 0) {
-            navigator->initialized = false;
-            return -1;
         } else {
+            const int incident = navigator->pending.cell_index;
+            const uint64_t parent = navigator->pending.owner_parent_occurrence_key;
+            navigator->substep_fill.enter_surface_id = 0;
+            if (navigator_load_interval(navigator) != 0) {
+                navigator->initialized = false;
+                return -1;
+            }
+            if (navigator->validation_mode != ALEA_NAV_VALIDATE_FAST && parent &&
+                parent == navigator->pending.owner_parent_occurrence_key &&
+                next.surface_id > 0) {
+                if (alea_substep_fill_transition(navigator->sys, &navigator->ray,
+                        navigator->current_t, incident, next.surface_id,
+                        navigator->pending.path, &navigator->substep_fill)) {
+                    navigator->location.kind = ALEA_NAV_UNRESOLVED;
+                }
+            }
+            if (recovered_outgoing) {
+                navigator->recovered_outgoing = 0;
+                if ((navigator->location.kind != ALEA_NAV_MATERIAL && navigator->location.kind != ALEA_NAV_VOID) ||
+                    navigator->location.occurrence_key != recovered_outgoing) {
+                    navigator->initialized = false;
+                    alea_set_error_detail(ALEA_ERR_INVALID_STATE, "recovered crossing has inconsistent outgoing owner");
+                    return -1;
+                }
+            } else if (navigator->validation_mode == ALEA_NAV_VALIDATE_TRANSPORT &&
+                       (next.before.kind == ALEA_NAV_MATERIAL || next.before.kind == ALEA_NAV_VOID) &&
+                       next.surface_id > 0 && transport_span_verified(navigator, &next.before,
+                           next.surface_id, &navigator->recovered_outgoing)) {
+                if (navigator->location.kind == ALEA_NAV_OVERLAP) navigator->recovery_stats.overlaps++;
+                else navigator->recovery_stats.gaps++;
+                navigator->recovery_seed = (alea_transport_recovery_seed_t){
+                    .incident = next.before, .other = navigator->recovered_outgoing,
+                    .defect = navigator->location.kind
+                };
+                navigator->recovery_remaining = navigator->pending.t_exit - navigator->current_t;
+                navigator->recovery_stats.last_enter_surface_id = next.surface_id;
+                navigator->recovery_stats.last_exit_surface_id = navigator->pending.exit_surface_id;
+                navigator->location = next.before;
+            }
             next.after = navigator->location;
         }
     } else {
         next.kind = collision_distance <= max_distance
             ? ALEA_NAV_COLLISION : ALEA_NAV_DISTANCE_LIMIT;
         next.distance = fmin(collision_distance, max_distance);
-        navigator->current_t += next.distance;
+        if (recovered_outgoing) {
+            navigator->recovery_remaining -= next.distance;
+            navigator->current_t = navigator->pending.t_exit - navigator->recovery_remaining;
+        } else navigator->current_t += next.distance;
+        navigator->substep_fill.enter_surface_id = 0;
     }
     alea_ray_point_at(&navigator->ray, navigator->current_t,
                       &next.position[0], &next.position[1], &next.position[2]);
+    if (recovered_outgoing) navigator->recovery_stats.distance_cm += next.distance;
     *event = next;
     return 0;
 }
@@ -6314,9 +6934,14 @@ int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
  * normal no-hit production traces through the combined compatibility loop. */
 static int ray_selected_interval_trace_mode(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
-    bool emit_hits, bool collect_boundary_groups, alea_raycast_result_t* result) {
+    bool emit_hits, bool collect_boundary_groups, alea_raycast_result_t* result,
+    const alea_ray_root_lookup_t* lookup) {
     alea_ray_walk_t walk;
     alea_ray_walk_init(&walk);
+    /* This consumer walks the entire segment. Prepare reusable roots through
+     * its finite end even when the first retry searches only a short span. */
+    result->recovery_root_limit = t_max < DBL_MAX ? t_max : 0;
+    walk.root_lookup = lookup;
     int published_prev_cell_idx = -2;
     int pending_enter_hit_index = -1;
     int status = 0;
@@ -6338,6 +6963,7 @@ static int ray_selected_interval_trace_mode(
     }
     recovery_context_destroy(result->recovery_roots);
     result->recovery_roots = NULL;
+    result->recovery_root_limit = 0;
     return status;
 }
 
@@ -6345,7 +6971,7 @@ static int ray_selected_interval_trace(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     bool emit_hits, alea_raycast_result_t* result) {
     return ray_selected_interval_trace_mode(
-        sys, ray, t_max, emit_hits, true, result);
+        sys, ray, t_max, emit_hits, true, result, NULL);
 }
 
 int alea_raycast_selected_boundary_events_with_options_nocache(
@@ -6868,6 +7494,14 @@ int alea_raycast_hier_fast_segments(alea_system_t* sys,
                                     double dx, double dy, double dz,
                                     double t_max,
                                     alea_raycast_result_t* result) {
+    return alea_raycast_hier_segments_with_root_lookup(
+        sys, ox, oy, oz, dx, dy, dz, t_max, result, NULL);
+}
+
+int alea_raycast_hier_segments_with_root_lookup(
+    alea_system_t* sys, double ox, double oy, double oz,
+    double dx, double dy, double dz, double t_max, alea_raycast_result_t* result,
+    const alea_ray_root_lookup_t* lookup) {
     if (!sys || !result) return -1;
 
     if (alea_system_prepare_query_caches(sys,
@@ -6883,7 +7517,7 @@ int alea_raycast_hier_fast_segments(alea_system_t* sys,
     result->ray = ray;
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
-    return ray_selected_interval_trace(sys, &ray, effective_t_max, false, result);
+    return ray_selected_interval_trace_mode(sys, &ray, effective_t_max, false, true, result, lookup);
 }
 
 int alea_raycast_hier_with_hits(alea_system_t* sys,
@@ -6969,7 +7603,10 @@ int alea_raycast_render_first_visible_nocache(
     const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
     alea_ray_walk_t walk;
     alea_ray_walk_init(&walk);
-    walk.entry_only = true;
+    /* A provisional void owner can hide a nearer material surface. Verify
+     * ownership as for selected intervals, then stop at the first accepted
+     * hit. Rendering still needs no coincident-surface group expansion. */
+    walk.require_interior_sample = true;
     for (;;) {
         alea_ray_selected_interval_t interval;
         const int rc = alea_ray_walk_next_selected_mode(
@@ -7053,7 +7690,7 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
     return ray_selected_interval_trace_mode(
-        sys, ray, effective_t_max, false, collect_boundary_groups, result);
+        sys, ray, effective_t_max, false, collect_boundary_groups, result, NULL);
 }
 
 int alea_raycast_hier_visit_intervals_nocache(

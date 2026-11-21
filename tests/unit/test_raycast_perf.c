@@ -1058,7 +1058,7 @@ TEST(perf_xray_render_frame_fixed_tile_scheduling) {
 
 /* Two deterministic lattice-entry cases retained from the hierarchy
  * correctness suite.  They make the entry-search attribution observable in
- * the normal performance report without requiring the optional E-lite deck:
+ * the normal performance report:
  * one transformed occurrence is pruned from trusted ancestor support before
  * DDA, while the other enters a thin active ancestor shell without stepping
  * through its large conservative AABB. */

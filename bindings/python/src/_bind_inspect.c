@@ -650,10 +650,13 @@ static PyObject* PyAleaSystem_find_cell_at(PyAleaSystemObject* self, PyObject* a
     double x, y, z;
     if (!PyArg_ParseTuple(args, "ddd", &x, &y, &z)) return NULL;
     if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
-    if (ensure_query_acceleration(self) < 0) return NULL;
+    if (ensure_point_lookup(self) < 0) return NULL;
 
     int cell_id, material;
-    int result = alea_find_cell_at(self->sys, x, y, z, &cell_id, &material);
+    int result;
+    Py_BEGIN_ALLOW_THREADS
+    result = alea_find_cell_at(self->sys, x, y, z, &cell_id, &material);
+    Py_END_ALLOW_THREADS
     if (result < 0) Py_RETURN_NONE;
     return Py_BuildValue("(ii)", cell_id, material);
 }

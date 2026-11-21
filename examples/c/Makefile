@@ -54,8 +54,8 @@ mcnp_roundtrip: mcnp_roundtrip.c
 mcnp_volume: mcnp_volume.c
 	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
 
-render3d: render3d.c ../../tools/render_view.h ../../tools/sdl_view.h viewer-config $(VIEW_COMPUTE_DEP)
-	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) $(VIEW_COMPUTE_CFLAGS) -o $@ $< $(VIEW_COMPUTE_LIBS) $(LIBS_ALL) $(SDL_LIBS)
+render3d: render3d.c ../../tools/render_view.h ../../tools/sdl_view.h $(VIEW_INSPECTOR_DEPS) viewer-config $(VIEW_COMPUTE_DEP)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) $(VIEW_COMPUTE_CFLAGS) -o $@ $< $(VIEW_INSPECTOR_SRC) $(VIEW_COMPUTE_LIBS) $(LIBS_ALL) $(SDL_LIBS)
 
 void_demo: void_demo.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)

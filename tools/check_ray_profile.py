@@ -59,7 +59,8 @@ def main():
         assert fills["nearer_hits"] <= fills["nearest_passes"]
         assert sum(fills[k] for k in ("duplicate_skips", "bbox_rejections", "descents")) <= fills["child_visits"]
         assert sum(t["tests"] for t in costs["root_build_types"]) == costs["recovery_root_tests"]
-        assert costs["cached_non_torus_candidates"] <= costs["recovery_root_queries"]
+        assert costs["cached_non_torus_candidates"] + costs["cached_empty_windows"] <= costs["recovery_root_queries"]
+        assert 0 <= costs["peak_root_bytes"] <= 8 * 1024 * 1024
         assert costs["indexed_root_lists"] <= costs["recovery_root_builds"]
         assert costs["roots_sorted"] <= sum(t["window_roots"] for t in costs["root_build_types"])
         lists = costs["top_scan_lists"]
