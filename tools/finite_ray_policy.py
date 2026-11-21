@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 # SPDX-License-Identifier: MPL-2.0
 """Replay finite geometry calls on a fresh model and check their ordered segments."""
 import argparse

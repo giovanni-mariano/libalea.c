@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # CPU particle navigation baseline
 
 The particle replay drives the public FP64 navigator. The box workload has paired

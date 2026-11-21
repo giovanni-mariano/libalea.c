@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 # SPDX-License-Identifier: MPL-2.0
 """Report the first difference between two navigator traces, ignoring timings."""
 import argparse

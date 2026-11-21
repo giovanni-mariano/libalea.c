@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 #ifndef ALEA_RENDER_INSPECTOR_H
 #define ALEA_RENDER_INSPECTOR_H

@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 /* Trace finite, collision-free flights with the public particle navigator.
  * Keep event serialization outside the profiler and the replay timer. */

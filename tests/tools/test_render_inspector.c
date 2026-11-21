@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 /* Drive the real probe and material controls with SDL mouse/text events. Locate controls in
  * Nuklear's text commands so font metrics and window layout can change. */

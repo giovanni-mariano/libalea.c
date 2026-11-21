@@ -25,7 +25,7 @@
  * marginal performance cost on the relaxed counters.
  *
  * Only the operations actually used in this codebase are provided:
- *   load, store, init, fetch_add (+_explicit), fetch_or, fetch_and,
+ *   load, store, init, fetch_add (+_explicit), fetch_sub, fetch_or, fetch_and,
  *   compare_exchange_strong, flag_test_and_set, flag_clear.
  * Add more here if new call sites need them.
  */
@@ -81,6 +81,9 @@ typedef enum {
     (sizeof(*(p)) == 8 \
         ? (unsigned long long)_InterlockedExchangeAdd64((volatile __int64 *)(p), (__int64)(v)) \
         : (unsigned long long)_InterlockedExchangeAdd((volatile long *)(p), (long)(v)))
+
+/* Negate in unsigned arithmetic so the delta wraps without signed overflow. */
+#define atomic_fetch_sub(p, v) atomic_fetch_add((p), 0ULL - (unsigned long long)(v))
 
 #define atomic_fetch_or(p, v) \
     (sizeof(*(p)) == 8 \

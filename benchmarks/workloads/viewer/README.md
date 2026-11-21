@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # SDL viewer replay
 
 Run from the repository root with SDL2 installed. This example renders the

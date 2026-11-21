@@ -20,6 +20,12 @@ SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
 SPDX-License-Identifier = "MPL-2.0"
 
 [[annotations]]
+path = ["benchmarks/workloads/transport/box.i", "benchmarks/workloads/transport/box.ops"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
 path = "tests/data/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
@@ -110,3 +116,16 @@ SPDX-License-Identifier = "MIT AND FSFULLR"
 path = "vendor/expat/lib/siphash.h"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "William Ahern and contributors"
+
+# Select the MIT option in vendor/nuklear/LICENSE. The main header includes
+# its own copyright notices and those for the bundled stb code and font.
+[[annotations]]
+path = "vendor/nuklear/nuklear.h"
+precedence = "aggregate"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "vendor/nuklear/nuklear_sdl_renderer.h"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2017 Micha Mettke"
+SPDX-License-Identifier = "MIT"

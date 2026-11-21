@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 /* Conservative emptiness tests for the untraced part of a camera or shadow
  * ray. Treat either side of a boundary as possible until strictly excluded. */

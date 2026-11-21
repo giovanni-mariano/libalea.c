@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 /* Section window owned by the inspector. Only inspector_slice runs on the worker. */
 enum { SECTION_FOOTER = 58, SECTION_PREVIEW_SIZE = 201, SECTION_MAX_PIXELS_PER_AXIS = 1024 };

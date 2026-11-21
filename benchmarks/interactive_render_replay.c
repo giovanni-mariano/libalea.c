@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 /* Drive the actual SDL viewer, including texture upload and presentation.
  * Run with SDL_VIDEODRIVER=dummy for a reproducible software-display replay. */

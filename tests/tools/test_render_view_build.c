@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 /* Exercise asynchronous regional publication, failure and quit with the
  * normal CLI, SDL event loop and render/save workers. */
